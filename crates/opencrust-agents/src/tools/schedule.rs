@@ -10,6 +10,9 @@ use crate::tools::{Tool, ToolContext, ToolOutput};
 /// Maximum delay: 30 days in seconds.
 const MAX_DELAY_SECONDS: i64 = 30 * 24 * 60 * 60;
 
+/// Minimum recurrence interval: 60 seconds.
+const MIN_RECURRENCE_SECONDS: i64 = 60;
+
 /// Maximum pending heartbeats per session.
 const MAX_PENDING_PER_SESSION: i64 = 20;
 
@@ -158,10 +161,10 @@ impl Tool for ScheduleHeartbeat {
                 let secs = args["interval_seconds"].as_i64().ok_or_else(|| {
                     Error::Agent("recurrence='interval' requires 'interval_seconds'".to_string())
                 })?;
-                if secs <= 0 || secs > MAX_DELAY_SECONDS {
-                    return Err(Error::Agent(
-                        "interval_seconds must be between 1 and 2592000".to_string(),
-                    ));
+                if !(MIN_RECURRENCE_SECONDS..=MAX_DELAY_SECONDS).contains(&secs) {
+                    return Err(Error::Agent(format!(
+                        "interval_seconds must be between {MIN_RECURRENCE_SECONDS} and {MAX_DELAY_SECONDS}"
+                    )));
                 }
                 (Some("interval"), Some(secs.to_string()))
             }
@@ -169,10 +172,19 @@ impl Tool for ScheduleHeartbeat {
                 let expr = args["cron_expression"].as_str().ok_or_else(|| {
                     Error::Agent("recurrence='cron' requires 'cron_expression'".to_string())
                 })?;
-                // Validate cron expression
+                // Validate cron expression and enforce minimum 60-second interval
                 use std::str::FromStr;
-                cron::Schedule::from_str(expr)
+                let schedule = cron::Schedule::from_str(expr)
                     .map_err(|e| Error::Agent(format!("invalid cron expression '{expr}': {e}")))?;
+                let mut upcoming = schedule.upcoming(chrono::Utc);
+                if let (Some(first), Some(second)) = (upcoming.next(), upcoming.next()) {
+                    let gap = (second - first).num_seconds();
+                    if gap < MIN_RECURRENCE_SECONDS {
+                        return Err(Error::Agent(format!(
+                            "cron expression fires too frequently (gap: {gap}s); minimum interval is {MIN_RECURRENCE_SECONDS}s"
+                        )));
+                    }
+                }
                 (Some("cron"), Some(expr.to_string()))
             }
             Some(other) => {
@@ -440,6 +452,50 @@ mod tests {
 
         assert!(err.is_err());
         assert!(err.unwrap_err().to_string().contains("must be positive"));
+    }
+
+    #[tokio::test]
+    async fn rejects_interval_below_minimum() {
+        let store = setup_store("sess-1").await;
+        let tool = ScheduleHeartbeat::new(store);
+
+        let err = tool
+            .execute(
+                &test_context("sess-1"),
+                serde_json::json!({
+                    "delay_seconds": 60,
+                    "reason": "too frequent",
+                    "recurrence": "interval",
+                    "interval_seconds": 59
+                }),
+            )
+            .await;
+
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("60"));
+    }
+
+    #[tokio::test]
+    async fn rejects_cron_below_minimum_interval() {
+        let store = setup_store("sess-1").await;
+        let tool = ScheduleHeartbeat::new(store);
+
+        // "* * * * * * *" fires every second
+        let err = tool
+            .execute(
+                &test_context("sess-1"),
+                serde_json::json!({
+                    "delay_seconds": 60,
+                    "reason": "too frequent cron",
+                    "recurrence": "cron",
+                    "cron_expression": "* * * * * * *"
+                }),
+            )
+            .await;
+
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("too frequently") || msg.contains("60"));
     }
 
     #[tokio::test]
