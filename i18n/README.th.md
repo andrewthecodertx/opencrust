@@ -87,7 +87,7 @@ binary สำหรับ Linux (x86_64, aarch64), macOS (Intel, Apple Silicon) 
 | **WASM plugin system** | Optional (sandboxed) | ไม่ | ไม่ |
 | **Self-update** | ใช่ (`opencrust update`) | npm | Build จาก source |
 
-*วัดผลบน DigitalOcean droplet 1 vCPU, 1 GB RAM [ทดสอบเองได้](bench/)*
+*วัดผลบน DigitalOcean droplet 1 vCPU, 1 GB RAM [ทดสอบเองได้](../bench/)*
 
 ## ความปลอดภัย
 
@@ -130,7 +130,7 @@ OpenCrust ถูกออกแบบสำหรับ AI agent ที่ทำ
 - **Discord** - slash commands, event-driven message handling, session management
 - **Slack** - Socket Mode, streaming responses, allowlist/pairing
 - **WhatsApp** - Meta Cloud API webhooks, allowlist/pairing
-- **iMessage** - macOS native ผ่าน chat.db polling, group chat, AppleScript sending ([คู่มือตั้งค่า](docs/imessage-setup.md))
+- **iMessage** - macOS native ผ่าน chat.db polling, group chat, AppleScript sending ([คู่มือตั้งค่า](../docs/imessage-setup.md))
 
 ### MCP (Model Context Protocol)
 - เชื่อมต่อ MCP server ใดก็ได้ (filesystem, GitHub, databases, web search)
@@ -217,7 +217,7 @@ mcp:
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 ```
 
-ดู [full configuration reference](docs/) สำหรับ options ทั้งหมด รวมถึง Discord, Slack, WhatsApp, iMessage, embeddings และ MCP server
+ดู [full configuration reference](../docs/) สำหรับ options ทั้งหมด รวมถึง Discord, Slack, WhatsApp, iMessage, embeddings และ MCP server
 
 ## สถาปัตยกรรม
 
@@ -259,7 +259,7 @@ crates/
 
 ## การมีส่วนร่วม
 
-OpenCrust เป็น open source ภายใต้ MIT license เข้าร่วม [Discord](https://discord.gg/aEXGq5cS) เพื่อพูดคุยกับผู้ร่วมพัฒนา ถามคำถาม หรือแชร์สิ่งที่คุณกำลังสร้าง ดู [CONTRIBUTING.md](CONTRIBUTING.md) สำหรับคำแนะนำการตั้งค่า แนวทางการเขียนโค้ด และ crate overview
+OpenCrust เป็น open source ภายใต้ MIT license เข้าร่วม [Discord](https://discord.gg/aEXGq5cS) เพื่อพูดคุยกับผู้ร่วมพัฒนา ถามคำถาม หรือแชร์สิ่งที่คุณกำลังสร้าง ดู [CONTRIBUTING.md](../CONTRIBUTING.md) สำหรับคำแนะนำการตั้งค่า แนวทางการเขียนโค้ด และ crate overview
 
 ### ลำดับความสำคัญปัจจุบัน
 
