@@ -2247,7 +2247,7 @@ pub fn build_line_channels(
             .get("channel_secret")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .or_else(|| std::env::var("LINE_CHANNEL_SECRET").ok());
+            .or_else(|| resolve_api_key(None, "LINE_CHANNEL_SECRET", "LINE_CHANNEL_SECRET"));
 
         let Some(channel_secret) = channel_secret else {
             warn!("line channel '{name}' has no channel_secret, skipping");
@@ -2260,8 +2260,15 @@ pub fn build_line_channels(
             .and_then(|v| v.as_str())
             .unwrap_or("open");
 
+        if group_policy == "mention" {
+            warn!(
+                "line channel '{name}': group_policy 'mention' is not supported \
+                 (LINE has no mention detection API) — treating as 'disabled'"
+            );
+        }
+
         let group_filter: LineGroupFilter = match group_policy {
-            "disabled" => Arc::new(|_| false),
+            "disabled" | "mention" => Arc::new(|_| false),
             _ => Arc::new(|_| true), // "open" — process all group messages
         };
 
@@ -2280,7 +2287,7 @@ pub fn build_line_channels(
 
         let on_message: LineOnMessageFn = Arc::new(
             move |user_id: String,
-                  _context_id: String,
+                  context_id: String,
                   text: String,
                   is_group: bool,
                   delta_tx: Option<tokio::sync::mpsc::Sender<String>>| {
@@ -2300,7 +2307,12 @@ pub fn build_line_channels(
                         }
                     }
 
-                    let session_id = format!("line-{user_id}");
+                    // Groups share a session per group/room; DMs are per user.
+                    let session_id = if is_group {
+                        format!("line-{context_id}")
+                    } else {
+                        format!("line-{user_id}")
+                    };
 
                     let text = opencrust_security::InputValidator::sanitize(&text);
                     if opencrust_security::InputValidator::check_prompt_injection(&text) {

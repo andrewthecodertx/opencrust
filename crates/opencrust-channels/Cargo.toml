@@ -26,7 +26,6 @@ rusqlite = { workspace = true, optional = true }
 dirs = { version = "6", optional = true }
 ring = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
-regex.workspace = true
 
 [dev-dependencies]
 tower = { workspace = true }

@@ -81,8 +81,7 @@ impl LineChannel {
         }
     }
 
-    /// Override the LINE API base URL. Used in tests to point at a mock server.
-    #[cfg(test)]
+    /// Override the LINE API base URL (e.g. to point at a mock server in tests).
     pub fn with_api_base_url(mut self, base_url: String) -> Self {
         self.api_base_url = base_url;
         self
@@ -107,12 +106,14 @@ impl LineChannel {
     /// Verify the `X-Line-Signature` header.
     ///
     /// LINE signs the raw request body with HMAC-SHA256 using the channel secret
-    /// and base64-encodes the result.
+    /// and base64-encodes the result. Uses `hmac::verify` for constant-time comparison
+    /// to avoid timing side-channels.
     pub fn verify_signature(&self, body: &[u8], signature: &str) -> bool {
+        let Ok(sig_bytes) = general_purpose::STANDARD.decode(signature) else {
+            return false;
+        };
         let key = hmac::Key::new(hmac::HMAC_SHA256, self.channel_secret.as_bytes());
-        let tag = hmac::sign(&key, body);
-        let expected = general_purpose::STANDARD.encode(tag.as_ref());
-        expected == signature
+        hmac::verify(&key, body, &sig_bytes).is_ok()
     }
 
     /// Process an incoming message through the `on_message` callback.
@@ -138,6 +139,7 @@ impl LineChannel {
 pub struct LineSender {
     client: Client,
     channel_access_token: String,
+    api_base_url: String,
 }
 
 #[async_trait]
@@ -147,7 +149,13 @@ impl ChannelSender for LineSender {
     }
 
     async fn send_message(&self, message: &Message) -> Result<()> {
-        line_push_message(&self.client, &self.channel_access_token, message).await
+        line_push_message(
+            &self.client,
+            &self.channel_access_token,
+            &self.api_base_url,
+            message,
+        )
+        .await
     }
 }
 
@@ -159,8 +167,9 @@ impl ChannelLifecycle for LineChannel {
 
     fn create_sender(&self) -> Box<dyn ChannelSender> {
         Box::new(LineSender {
-            client: Client::new(),
+            client: self.client.clone(),
             channel_access_token: self.channel_access_token.clone(),
+            api_base_url: self.api_base_url.clone(),
         })
     }
 
@@ -190,7 +199,13 @@ impl ChannelSender for LineChannel {
     }
 
     async fn send_message(&self, message: &Message) -> Result<()> {
-        line_push_message(&self.client, &self.channel_access_token, message).await
+        line_push_message(
+            &self.client,
+            &self.channel_access_token,
+            &self.api_base_url,
+            message,
+        )
+        .await
     }
 }
 
@@ -201,6 +216,7 @@ impl ChannelSender for LineChannel {
 async fn line_push_message(
     client: &Client,
     channel_access_token: &str,
+    api_base_url: &str,
     message: &Message,
 ) -> Result<()> {
     let user_id = message
@@ -220,15 +236,9 @@ async fn line_push_message(
         }
     };
 
-    api::push(
-        client,
-        channel_access_token,
-        user_id,
-        &text,
-        api::LINE_API_BASE,
-    )
-    .await
-    .map_err(|e| opencrust_common::Error::Channel(format!("line push failed: {e}")))?;
+    api::push(client, channel_access_token, user_id, &text, api_base_url)
+        .await
+        .map_err(|e| opencrust_common::Error::Channel(format!("line push failed: {e}")))?;
 
     Ok(())
 }
