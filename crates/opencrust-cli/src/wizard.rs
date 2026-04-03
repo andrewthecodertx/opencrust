@@ -31,6 +31,9 @@ struct DetectedKeys {
     wechat_appid: Option<String>,
     wechat_secret: Option<String>,
     wechat_token: Option<String>,
+    brave_api_key: Option<String>,
+    google_search_key: Option<String>,
+    google_search_engine_id: Option<String>,
 }
 
 impl DetectedKeys {
@@ -103,6 +106,9 @@ fn detect_env_keys() -> DetectedKeys {
         wechat_appid: get("WECHAT_APPID"),
         wechat_secret: get("WECHAT_SECRET"),
         wechat_token: get("WECHAT_TOKEN"),
+        brave_api_key: get("BRAVE_API_KEY"),
+        google_search_key: get("GOOGLE_SEARCH_KEY"),
+        google_search_engine_id: get("GOOGLE_SEARCH_ENGINE_ID"),
     }
 }
 
@@ -251,6 +257,41 @@ async fn validate_line_token(access_token: &str) -> Result<String> {
         .unwrap_or("unknown")
         .to_string();
     Ok(name)
+}
+
+async fn validate_google_search(api_key: &str, cx: &str) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let resp = client
+        .get("https://www.googleapis.com/customsearch/v1")
+        .query(&[("key", api_key), ("cx", cx), ("q", "test")])
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let err: serde_json::Value = resp.json().await?;
+        let msg = err["error"]["message"].as_str().unwrap_or("unknown error");
+        anyhow::bail!("{msg}");
+    }
+    Ok(())
+}
+
+async fn validate_brave_search(api_key: &str) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let resp = client
+        .get("https://api.search.brave.com/res/v1/web/search")
+        .header("X-Subscription-Token", api_key)
+        .query(&[("q", "test")])
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        anyhow::bail!("invalid API key (HTTP {})", resp.status());
+    }
+    Ok(())
 }
 
 /// Validate a base URL format.
@@ -1327,6 +1368,166 @@ async fn setup_wechat(
     }))
 }
 
+async fn section_tools(
+    existing: &Option<AppConfig>,
+    detected: &DetectedKeys,
+) -> Result<Option<opencrust_config::WebSearchConfig>> {
+    println!();
+    println!("  --- Web Search ---");
+
+    let existing_search = existing.as_ref().and_then(|c| c.tools.web_search.as_ref());
+
+    if let Some(cfg) = existing_search {
+        println!("  Current: {} (api key configured)", cfg.provider);
+        let choices = &["Keep current", "Change/Configure"];
+        let sel = Select::new()
+            .with_prompt("Web Search")
+            .items(choices)
+            .default(0)
+            .interact()
+            .context("selection cancelled")?;
+        if sel == 0 {
+            return Ok(None);
+        }
+    }
+
+    let providers = &["brave", "google", "none"];
+    let selection = Select::new()
+        .with_prompt("Select search provider")
+        .items(providers)
+        .default(0)
+        .interact()
+        .context("selection cancelled")?;
+
+    let provider = providers[selection];
+    if provider == "none" {
+        return Ok(Some(opencrust_config::WebSearchConfig {
+            provider: "none".to_string(),
+            api_key: None,
+            search_engine_id: None,
+        }));
+    }
+
+    if provider == "google" {
+        setup_google_search(existing_search, detected).await
+    } else {
+        setup_brave_search(existing_search, detected).await
+    }
+}
+
+async fn setup_google_search(
+    existing: Option<&opencrust_config::WebSearchConfig>,
+    detected: &DetectedKeys,
+) -> Result<Option<opencrust_config::WebSearchConfig>> {
+    println!();
+    println!("  Google Custom Search Setup");
+    println!("  1. Go to https://developers.google.com/custom-search/v1/introduction");
+    println!("  2. Get an API Key and create a Search Engine (CX)");
+    println!();
+
+    let existing_key = existing.and_then(|c| c.api_key.as_deref());
+    let existing_cx = existing.and_then(|c| c.search_engine_id.as_deref());
+
+    let api_key = prompt_token_with_source(
+        "API Key",
+        existing_key,
+        detected.google_search_key.as_deref(),
+        "GOOGLE_SEARCH_KEY",
+    )?;
+
+    if api_key.is_empty() {
+        return Ok(None);
+    }
+
+    let cx_source = detected.google_search_engine_id.as_deref().or(existing_cx);
+    let cx_prompt = if let Some(src) = cx_source {
+        format!("Search Engine ID (CX) [{}]", mask_token(src))
+    } else {
+        "Search Engine ID (CX)".to_string()
+    };
+    let cx: String = Input::new()
+        .with_prompt(&cx_prompt)
+        .default(cx_source.unwrap_or("").to_string())
+        .allow_empty(true)
+        .interact_text()
+        .context("input cancelled")?;
+    let cx = cx.trim().to_string();
+
+    if cx.is_empty() {
+        return Ok(None);
+    }
+
+    // Validate
+    print!("  Testing connection... ");
+    match validate_google_search(&api_key, &cx).await {
+        Ok(_) => println!("ok"),
+        Err(e) => {
+            println!("failed ({e})");
+            if !Confirm::new()
+                .with_prompt("  Save anyway?")
+                .default(true)
+                .interact()
+                .unwrap_or(true)
+            {
+                return Ok(None);
+            }
+        }
+    }
+
+    Ok(Some(opencrust_config::WebSearchConfig {
+        provider: "google".to_string(),
+        api_key: Some(api_key),
+        search_engine_id: Some(cx),
+    }))
+}
+
+async fn setup_brave_search(
+    existing: Option<&opencrust_config::WebSearchConfig>,
+    detected: &DetectedKeys,
+) -> Result<Option<opencrust_config::WebSearchConfig>> {
+    println!();
+    println!("  Brave Search Setup");
+    println!("  1. Go to https://api.search.brave.com/app/dashboard");
+    println!("  2. Get a subscription token");
+    println!();
+
+    let existing_key = existing.and_then(|c| c.api_key.as_deref());
+
+    let api_key = prompt_token_with_source(
+        "API Key",
+        existing_key,
+        detected.brave_api_key.as_deref(),
+        "BRAVE_API_KEY",
+    )?;
+
+    if api_key.is_empty() {
+        return Ok(None);
+    }
+
+    // Validate
+    print!("  Testing connection... ");
+    match validate_brave_search(&api_key).await {
+        Ok(_) => println!("ok"),
+        Err(e) => {
+            println!("failed ({e})");
+            if !Confirm::new()
+                .with_prompt("  Save anyway?")
+                .default(true)
+                .interact()
+                .unwrap_or(true)
+            {
+                return Ok(None);
+            }
+        }
+    }
+
+    Ok(Some(opencrust_config::WebSearchConfig {
+        provider: "brave".to_string(),
+        api_key: Some(api_key),
+        search_engine_id: None,
+    }))
+}
+
 /// Prompt for a token, showing the source if detected from env or existing config.
 /// Returns the token string (may be empty if user skips).
 fn prompt_token_with_source(
@@ -1451,6 +1652,9 @@ pub async fn run_wizard(config_dir: &Path) -> Result<()> {
     // --- Section 2: Channels ---
     let new_channels = section_channels(&existing, &detected).await?;
 
+    // --- Section 3: Tools ---
+    let new_search_config = section_tools(&existing, &detected).await?;
+
     // --- Build config ---
     let mut config = existing.unwrap_or_default();
 
@@ -1531,6 +1735,11 @@ pub async fn run_wizard(config_dir: &Path) -> Result<()> {
     // Apply channel changes
     if let Some(channels) = new_channels {
         config.channels = channels;
+    }
+
+    // Apply tools changes
+    if let Some(search_cfg) = new_search_config {
+        config.tools.web_search = Some(search_cfg);
     }
 
     // Write config

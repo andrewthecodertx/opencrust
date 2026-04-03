@@ -35,6 +35,9 @@ pub struct AppConfig {
     /// If empty, the single `agent:` block is used as "default".
     #[serde(default)]
     pub agents: HashMap<String, NamedAgentConfig>,
+
+    #[serde(default)]
+    pub tools: ToolsConfig,
 }
 
 impl Default for AppConfig {
@@ -50,6 +53,7 @@ impl Default for AppConfig {
             log_level: Some("info".to_string()),
             mcp: HashMap::new(),
             agents: HashMap::new(),
+            tools: ToolsConfig::default(),
         }
     }
 }
@@ -204,6 +208,19 @@ pub struct NamedAgentConfig {
     /// Restrict which tools this agent can use (empty = all tools).
     #[serde(default)]
     pub tools: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ToolsConfig {
+    #[serde(default)]
+    pub web_search: Option<WebSearchConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebSearchConfig {
+    pub provider: String,
+    pub api_key: Option<String>,
+    pub search_engine_id: Option<String>,
 }
 
 fn default_memory_enabled() -> bool {

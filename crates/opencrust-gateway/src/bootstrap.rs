@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 use opencrust_agents::tools::Tool;
 use opencrust_agents::{
     AgentRuntime, AnthropicProvider, BashTool, ChatMessage, CohereEmbeddingProvider, DocSearchTool,
-    FileReadTool, FileWriteTool, McpManager, OllamaProvider, OpenAiProvider, WebFetchTool,
-    WebSearchTool,
+    FileReadTool, FileWriteTool, GoogleSearchTool, McpManager, OllamaProvider, OpenAiProvider,
+    WebFetchTool, WebSearchTool,
 };
 #[cfg(target_os = "macos")]
 use opencrust_channels::{IMessageChannel, IMessageGroupFilter, IMessageOnMessageFn};
@@ -413,14 +413,52 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     runtime.register_tool(Box::new(FileWriteTool::new(None)));
     runtime.register_tool(Box::new(WebFetchTool::new(None)));
 
-    // Web search (Brave Search API) — only registered when an API key is available
-    let brave_config_key = config.llm.get("brave").and_then(|c| c.api_key.clone());
-    if let Some(key) = resolve_api_key(
-        brave_config_key.as_deref(),
-        "BRAVE_API_KEY",
-        "BRAVE_API_KEY",
-    ) {
-        runtime.register_tool(Box::new(WebSearchTool::new(key)));
+    // Web search (Brave or Google)
+    let search_config = config.tools.web_search.as_ref();
+    let provider = search_config.map(|c| c.provider.as_str());
+
+    match provider {
+        Some("google") => {
+            let api_key = resolve_api_key(
+                search_config.and_then(|c| c.api_key.as_deref()),
+                "GOOGLE_SEARCH_KEY",
+                "GOOGLE_SEARCH_KEY",
+            );
+            let cx = resolve_api_key(
+                search_config.and_then(|c| c.search_engine_id.as_deref()),
+                "GOOGLE_SEARCH_ENGINE_ID",
+                "GOOGLE_SEARCH_ENGINE_ID",
+            );
+
+            if let (Some(key), Some(cx)) = (api_key, cx) {
+                runtime.register_tool(Box::new(GoogleSearchTool::new(key, cx)));
+                info!("web search tool registered: google");
+            } else {
+                warn!("skipping google search: missing api_key or search_engine_id");
+            }
+        }
+        Some("brave") | None => {
+            // Legacy brave config check if no tools block exists
+            let brave_config_key = if let Some(cfg) = search_config {
+                cfg.api_key.clone()
+            } else {
+                config.llm.get("brave").and_then(|c| c.api_key.clone())
+            };
+
+            if let Some(key) = resolve_api_key(
+                brave_config_key.as_deref(),
+                "BRAVE_API_KEY",
+                "BRAVE_API_KEY",
+            ) {
+                runtime.register_tool(Box::new(WebSearchTool::new(key)));
+                info!("web search tool registered: brave");
+            } else if provider.is_some() {
+                warn!("skipping brave search: no API key found");
+            }
+        }
+        Some(other) => {
+            warn!("unknown web search provider: {other}, skipping");
+        }
     }
 
     // --- Memory ---
