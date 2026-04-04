@@ -122,6 +122,33 @@ document.getElementById("font-size-sm").addEventListener("click", () => setFontS
 document.getElementById("font-size-md").addEventListener("click", () => setFontSize("md"));
 document.getElementById("font-size-lg").addEventListener("click", () => setFontSize("lg"));
 
+// Sidebar drawer (mobile)
+const sidebarEl = document.querySelector(".left-sidebar");
+const sidebarBackdrop = document.getElementById("sidebar-backdrop");
+const sidebarToggleBtn = document.getElementById("sidebar-toggle");
+
+function openSidebar() {
+  sidebarEl.classList.add("open");
+  sidebarBackdrop.classList.add("open");
+}
+
+function closeSidebar() {
+  sidebarEl.classList.remove("open");
+  sidebarBackdrop.classList.remove("open");
+}
+
+sidebarToggleBtn.addEventListener("click", () => {
+  sidebarEl.classList.contains("open") ? closeSidebar() : openSidebar();
+});
+sidebarBackdrop.addEventListener("click", closeSidebar);
+
+// Close sidebar when a nav item is tapped on mobile
+document.querySelectorAll(".nav-item").forEach((item) => {
+  item.addEventListener("click", () => {
+    if (window.innerWidth <= 768) closeSidebar();
+  });
+});
+
 function wsUrl() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const base = `${proto}//${location.host}/ws`;

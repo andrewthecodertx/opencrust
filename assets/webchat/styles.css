@@ -333,6 +333,13 @@ body.ready {
   height: 100%;
 }
 
+/* Right status sidebar: flex column so sidebar-body can grow and scroll */
+.workspace > aside.panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .panel {
   border: 1px solid var(--panel-edge);
   border-radius: 16px;
@@ -387,6 +394,10 @@ body.ready {
   padding: 14px;
   display: grid;
   gap: 14px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  flex: 1;
+  min-height: 0;
 }
 
 .status-group {
@@ -986,30 +997,266 @@ textarea,
   }
 }
 
+/* ── Hamburger button (hidden on desktop) ─────────────────────────────── */
+.sidebar-toggle {
+  display: none;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  width: 36px;
+  height: 36px;
+  padding: 6px;
+  background: transparent;
+  border: 1px solid var(--panel-edge);
+  border-radius: 8px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.sidebar-toggle span {
+  display: block;
+  height: 2px;
+  background: var(--ink);
+  border-radius: 2px;
+  transition: transform 0.2s, opacity 0.2s;
+}
+
+/* Backdrop for drawer (hidden by default) */
+.sidebar-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 99;
+}
+
+.sidebar-backdrop.open {
+  display: block;
+}
+
+/* ── 980 px — tablet: hide right panel ────────────────────────────────── */
 @media (max-width: 980px) {
-  .shell {
-    padding: 14px;
+  .main-wrapper {
+    padding: 16px;
+    overflow-y: auto;
   }
 
+  /* Stack panels vertically; let height grow naturally so page is scrollable */
   .workspace {
     grid-template-columns: 1fr;
+    grid-template-rows: auto;
+    flex: none;
+    height: auto;
+  }
+
+  /* Chat panel: tall enough to be usable, but not locked to viewport */
+  .panel-view {
+    height: auto;
+    min-height: 70vh;
   }
 
   .chat {
-    min-height: 44vh;
-    max-height: 56vh;
+    min-height: 50vh;
   }
 
+  /* Status panel sits below chat, grows with content */
+  .workspace > aside.panel {
+    overflow: visible;
+    height: auto;
+    max-height: none;
+    min-height: 0;
+  }
+
+  /* Let sidebar-body grow naturally instead of scrolling internally */
+  .workspace > aside.panel .sidebar-body {
+    overflow-y: visible;
+    flex: none;
+    min-height: 0;
+    height: auto;
+  }
+
+  .composer button {
+    min-width: 72px;
+  }
+}
+
+/* ── 768 px — mobile: sidebar becomes overlay drawer ──────────────────── */
+@media (max-width: 768px) {
+  /* Show hamburger */
+  .sidebar-toggle {
+    display: flex;
+  }
+
+  /* Pull sidebar out of flow → overlay drawer */
+  .left-sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 100;
+    width: min(280px, 80vw);
+    transform: translateX(-100%);
+    transition: transform 0.26s ease;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .left-sidebar.open {
+    transform: translateX(0);
+    box-shadow: 6px 0 32px rgba(0, 0, 0, 0.22);
+  }
+
+  /* Topbar: hamburger left, actions right */
+  .topbar {
+    justify-content: space-between;
+    padding: 8px 12px;
+    min-height: 48px;
+    gap: 8px;
+    border-radius: 12px;
+  }
+
+  .topbar-actions {
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .theme-toggle {
+    font-size: 0.72rem;
+    padding: 5px 9px;
+  }
+
+  .font-size-controls {
+    padding: 1px 3px;
+  }
+
+  .font-size-btn {
+    padding: 2px 6px;
+    font-size: 0.7rem;
+  }
+
+  .main-wrapper {
+    padding: 10px;
+    gap: 10px;
+    overflow-y: auto;
+  }
+
+  /* Workspace stacks vertically, grows with content */
+  .workspace {
+    flex: none;
+    height: auto;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+    min-height: 0;
+  }
+
+  /* Status panel visible below chat */
+  .workspace > aside.panel {
+    display: flex;
+    overflow: visible;
+    height: auto;
+    max-height: none;
+  }
+
+  .workspace > aside.panel .sidebar-body {
+    overflow-y: visible;
+    flex: none;
+    height: auto;
+  }
+
+  /* Chat panel: tall enough to use comfortably */
+  .panel-view {
+    height: auto;
+    min-height: 65vh;
+  }
+
+  .chat-top {
+    padding: 10px 12px;
+    gap: 6px;
+  }
+
+  /* Chat area: smooth scroll on iOS */
+  .chat {
+    flex: 1;
+    min-height: 0;
+    padding: 12px;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .controls {
+    padding: 10px 12px;
+  }
+
+  /* Messages take more width on narrow screens */
+  .msg {
+    max-width: 90%;
+  }
+
+  /* Composer: textarea + button side by side (default), no forced stack */
+  .composer {
+    gap: 6px;
+  }
+}
+
+/* ── 480 px — small phones ────────────────────────────────────────────── */
+@media (max-width: 480px) {
+  .main-wrapper {
+    padding: 6px;
+    gap: 6px;
+  }
+
+  .topbar {
+    padding: 6px 10px;
+    border-radius: 10px;
+  }
+
+  /* Hide font-size controls — use system default */
+  .font-size-controls {
+    display: none;
+  }
+
+  .theme-toggle {
+    font-size: 0.7rem;
+    padding: 4px 8px;
+  }
+
+  .chat-top {
+    padding: 8px 10px;
+  }
+
+  /* Hide the hint text ("Enter sends, Shift+Enter newline") */
+  .chat-meta span:not(:first-child) {
+    display: none;
+  }
+
+  .chat {
+    padding: 8px;
+    gap: 8px;
+  }
+
+  .controls {
+    padding: 8px 10px;
+  }
+
+  /* Composer: stack on very small screens */
   .composer {
     grid-template-columns: 1fr;
+    gap: 6px;
   }
 
   .composer button {
     width: 100%;
   }
 
+  textarea {
+    min-height: 56px;
+  }
+
+  .msg {
+    max-width: 96%;
+    padding: 8px 10px;
+  }
+
   .nano-label {
-    font-size: 0.72rem;
+    font-size: 0.7rem;
   }
 }
 
