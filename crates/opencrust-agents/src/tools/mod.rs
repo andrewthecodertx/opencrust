@@ -29,6 +29,10 @@ pub struct ToolContext {
     /// Scheduling is allowed up to depth 3 to enable chaining.
     #[serde(default)]
     pub heartbeat_depth: u8,
+    /// When set, only tools in this list may be executed.
+    /// Empty list means no tools are allowed; `None` means all tools are allowed.
+    #[serde(default)]
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 /// Trait for tools that agents can invoke (bash, browser, file operations, etc.).

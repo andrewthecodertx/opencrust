@@ -117,6 +117,7 @@ mod tests {
             session_id: "test".into(),
             user_id: None,
             heartbeat_depth: 0,
+            allowed_tools: None,
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(tool.execute(&ctx, serde_json::json!({})));
@@ -132,6 +133,7 @@ mod tests {
             session_id: "test".into(),
             user_id: None,
             heartbeat_depth: 0,
+            allowed_tools: None,
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt

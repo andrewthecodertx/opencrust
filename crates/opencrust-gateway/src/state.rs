@@ -639,6 +639,8 @@ impl AppState {
             .retain(|session_id, _| self.sessions.contains_key(session_id));
         self.session_token_counts
             .retain(|session_id, _| self.sessions.contains_key(session_id));
+        self.agents
+            .retain_session_tool_configs(|session_id| self.sessions.contains_key(session_id));
 
         if removed > 0 {
             info!("cleaned up {removed} expired sessions");

@@ -881,6 +881,11 @@ pub fn build_discord_channels(
                     state
                         .check_token_budget(&session_id, &user_id, &guardrails_config)
                         .await?;
+                    state.agents.set_session_tool_config(
+                        &session_id,
+                        guardrails_config.allowed_tools.clone(),
+                        guardrails_config.session_tool_call_budget,
+                    );
 
                     let text = opencrust_security::InputValidator::sanitize(&text);
                     if opencrust_security::InputValidator::exceeds_length(&text, max_input_chars) {
@@ -1154,6 +1159,11 @@ pub fn build_telegram_channels(
                     state
                         .check_token_budget(&session_id, &user_id, &guardrails_config)
                         .await?;
+                    state.agents.set_session_tool_config(
+                        &session_id,
+                        guardrails_config.allowed_tools.clone(),
+                        guardrails_config.session_tool_call_budget,
+                    );
 
                     // --- Handle media or text ---
                     match attachment {
@@ -1863,6 +1873,11 @@ pub fn build_slack_channels(
                     state
                         .check_token_budget(&session_id, &user_id, &guardrails_config)
                         .await?;
+                    state.agents.set_session_tool_config(
+                        &session_id,
+                        guardrails_config.allowed_tools.clone(),
+                        guardrails_config.session_tool_call_budget,
+                    );
 
                     let text = opencrust_security::InputValidator::sanitize(&text);
                     if opencrust_security::InputValidator::check_prompt_injection(&text) {
@@ -2081,6 +2096,11 @@ pub fn build_whatsapp_channels(
                     state
                         .check_token_budget(&session_id, &from_number, &guardrails_config)
                         .await?;
+                    state.agents.set_session_tool_config(
+                        &session_id,
+                        guardrails_config.allowed_tools.clone(),
+                        guardrails_config.session_tool_call_budget,
+                    );
 
                     let text = opencrust_security::InputValidator::sanitize(&text);
                     if opencrust_security::InputValidator::check_prompt_injection(&text) {
@@ -2284,6 +2304,11 @@ pub fn build_whatsapp_web_channels(
                     state
                         .check_token_budget(&session_id, &from_jid, &guardrails_config)
                         .await?;
+                    state.agents.set_session_tool_config(
+                        &session_id,
+                        guardrails_config.allowed_tools.clone(),
+                        guardrails_config.session_tool_call_budget,
+                    );
 
                     let text = opencrust_security::InputValidator::sanitize(&text);
                     if opencrust_security::InputValidator::check_prompt_injection(&text) {
@@ -2462,6 +2487,11 @@ pub fn build_imessage_channels(
                     state
                         .check_token_budget(&session_id, &sender_id, &guardrails_config)
                         .await?;
+                    state.agents.set_session_tool_config(
+                        &session_id,
+                        guardrails_config.allowed_tools.clone(),
+                        guardrails_config.session_tool_call_budget,
+                    );
 
                     let text = opencrust_security::InputValidator::sanitize(&text);
                     if opencrust_security::InputValidator::check_prompt_injection(&text) {
@@ -2652,6 +2682,11 @@ pub fn build_line_channels(
                     state
                         .check_token_budget(&session_id, &user_id, &guardrails_config)
                         .await?;
+                    state.agents.set_session_tool_config(
+                        &session_id,
+                        guardrails_config.allowed_tools.clone(),
+                        guardrails_config.session_tool_call_budget,
+                    );
 
                     let text = opencrust_security::InputValidator::sanitize(&text);
                     if opencrust_security::InputValidator::check_prompt_injection(&text) {
@@ -2852,6 +2887,11 @@ pub fn build_wechat_channels(
                     state
                         .check_token_budget(&session_id, &user_id, &guardrails_config)
                         .await?;
+                    state.agents.set_session_tool_config(
+                        &session_id,
+                        guardrails_config.allowed_tools.clone(),
+                        guardrails_config.session_tool_call_budget,
+                    );
 
                     let text = opencrust_security::InputValidator::sanitize(&text);
                     if opencrust_security::InputValidator::check_prompt_injection(&text) {
