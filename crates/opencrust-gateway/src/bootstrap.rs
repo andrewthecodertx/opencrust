@@ -830,6 +830,8 @@ pub fn build_discord_channels(
         let allowlist_for_cb = Arc::clone(&allowlist);
         let pairing_for_cb = Arc::clone(&pairing);
         let policy_for_cb = Arc::clone(&policy);
+        let max_input_chars = config.guardrails.max_input_chars;
+        let max_output_chars = config.guardrails.max_output_chars;
 
         let on_message: opencrust_channels::discord::DiscordOnMessageFn = Arc::new(
             move |channel_id: String,
@@ -872,6 +874,11 @@ pub fn build_discord_channels(
                     let session_id = format!("discord-{channel_id}");
 
                     let text = opencrust_security::InputValidator::sanitize(&text);
+                    if opencrust_security::InputValidator::exceeds_length(&text, max_input_chars) {
+                        return Err(format!(
+                            "message too long (max {max_input_chars} characters)"
+                        ));
+                    }
                     if opencrust_security::InputValidator::check_prompt_injection(&text) {
                         return Err(
                             "input rejected: potential prompt injection detected".to_string()
@@ -916,6 +923,11 @@ pub fn build_discord_channels(
                     if let Some(s) = new_summary {
                         state.update_session_summary(&session_id, &s);
                     }
+
+                    let response = opencrust_security::InputValidator::truncate_output(
+                        &response,
+                        max_output_chars,
+                    );
 
                     state
                         .persist_turn(
@@ -1086,6 +1098,8 @@ pub fn build_telegram_channels(
         let allowlist_for_cb = Arc::clone(&allowlist);
         let pairing_for_cb = Arc::clone(&pairing);
         let policy_for_cb = Arc::clone(&policy);
+        let max_input_chars = config.guardrails.max_input_chars;
+        let max_output_chars = config.guardrails.max_output_chars;
 
         let on_message: opencrust_channels::OnMessageFn = Arc::new(
             move |chat_id: i64,
@@ -1137,6 +1151,14 @@ pub fn build_telegram_channels(
                             if opencrust_security::InputValidator::check_prompt_injection(&text) {
                                 return Err("input rejected: potential prompt injection detected"
                                     .to_string());
+                            }
+                            if opencrust_security::InputValidator::exceeds_length(
+                                &text,
+                                max_input_chars,
+                            ) {
+                                return Err(format!(
+                                    "input rejected: message exceeds {max_input_chars} character limit"
+                                ));
                             }
 
                             state
@@ -1199,6 +1221,10 @@ pub fn build_telegram_channels(
                                     .persist_usage(&session_id, &provider, &model, input, output)
                                     .await;
                             }
+                            let response = opencrust_security::InputValidator::truncate_output(
+                                &response,
+                                max_output_chars,
+                            );
                             Ok(response)
                         }
                         Some(MediaAttachment::Photo { data, caption }) => {
@@ -1277,6 +1303,10 @@ pub fn build_telegram_channels(
                                     .persist_usage(&session_id, &provider, &model, input, output)
                                     .await;
                             }
+                            let response = opencrust_security::InputValidator::truncate_output(
+                                &response,
+                                max_output_chars,
+                            );
                             Ok(response)
                         }
                         Some(MediaAttachment::Document {
@@ -1316,6 +1346,14 @@ pub fn build_telegram_channels(
                                 return Err("input rejected: potential prompt injection detected"
                                     .to_string());
                             }
+                            if opencrust_security::InputValidator::exceeds_length(
+                                &text,
+                                max_input_chars,
+                            ) {
+                                return Err(format!(
+                                    "input rejected: message exceeds {max_input_chars} character limit"
+                                ));
+                            }
 
                             state
                                 .hydrate_session_history(
@@ -1377,6 +1415,10 @@ pub fn build_telegram_channels(
                                     .persist_usage(&session_id, &provider, &model, input, output)
                                     .await;
                             }
+                            let response = opencrust_security::InputValidator::truncate_output(
+                                &response,
+                                max_output_chars,
+                            );
                             Ok(response)
                         }
                         None => {
@@ -1386,6 +1428,14 @@ pub fn build_telegram_channels(
                                 return Err("input rejected: potential prompt injection detected"
                                     .to_string());
                             }
+                            if opencrust_security::InputValidator::exceeds_length(
+                                &text,
+                                max_input_chars,
+                            ) {
+                                return Err(format!(
+                                    "input rejected: message exceeds {max_input_chars} character limit"
+                                ));
+                            }
 
                             state
                                 .hydrate_session_history(
@@ -1447,6 +1497,10 @@ pub fn build_telegram_channels(
                                     .persist_usage(&session_id, &provider, &model, input, output)
                                     .await;
                             }
+                            let response = opencrust_security::InputValidator::truncate_output(
+                                &response,
+                                max_output_chars,
+                            );
                             Ok(response)
                         }
                     }
@@ -1754,6 +1808,8 @@ pub fn build_slack_channels(
         let allowlist_for_cb = Arc::clone(&allowlist);
         let pairing_for_cb = Arc::clone(&pairing);
         let policy_for_cb = Arc::clone(&policy);
+        let max_input_chars = config.guardrails.max_input_chars;
+        let max_output_chars = config.guardrails.max_output_chars;
 
         let on_message: SlackOnMessageFn = Arc::new(
             move |channel_id: String,
@@ -1786,6 +1842,11 @@ pub fn build_slack_channels(
                         return Err(
                             "input rejected: potential prompt injection detected".to_string()
                         );
+                    }
+                    if opencrust_security::InputValidator::exceeds_length(&text, max_input_chars) {
+                        return Err(format!(
+                            "input rejected: message exceeds {max_input_chars} character limit"
+                        ));
                     }
 
                     state
@@ -1846,6 +1907,10 @@ pub fn build_slack_channels(
                             .await;
                     }
 
+                    let response = opencrust_security::InputValidator::truncate_output(
+                        &response,
+                        max_output_chars,
+                    );
                     Ok(response)
                 })
             },
@@ -1947,6 +2012,8 @@ pub fn build_whatsapp_channels(
         let allowlist_for_cb = Arc::clone(&allowlist);
         let pairing_for_cb = Arc::clone(&pairing);
         let policy_for_cb = Arc::clone(&policy);
+        let max_input_chars = config.guardrails.max_input_chars;
+        let max_output_chars = config.guardrails.max_output_chars;
 
         let on_message: WhatsAppOnMessageFn = Arc::new(
             move |from_number: String,
@@ -1984,6 +2051,11 @@ pub fn build_whatsapp_channels(
                         return Err(
                             "input rejected: potential prompt injection detected".to_string()
                         );
+                    }
+                    if opencrust_security::InputValidator::exceeds_length(&text, max_input_chars) {
+                        return Err(format!(
+                            "input rejected: message exceeds {max_input_chars} character limit"
+                        ));
                     }
 
                     state
@@ -2044,6 +2116,10 @@ pub fn build_whatsapp_channels(
                             .await;
                     }
 
+                    let response = opencrust_security::InputValidator::truncate_output(
+                        &response,
+                        max_output_chars,
+                    );
                     Ok(response)
                 })
             },
@@ -2130,6 +2206,8 @@ pub fn build_whatsapp_web_channels(
         let allowlist_for_cb = Arc::clone(&allowlist);
         let pairing_for_cb = Arc::clone(&pairing);
         let policy_for_cb = Arc::clone(&policy);
+        let max_input_chars = config.guardrails.max_input_chars;
+        let max_output_chars = config.guardrails.max_output_chars;
 
         let on_message: WhatsAppOnMessageFn = Arc::new(
             move |from_jid: String,
@@ -2167,6 +2245,11 @@ pub fn build_whatsapp_web_channels(
                         return Err(
                             "input rejected: potential prompt injection detected".to_string()
                         );
+                    }
+                    if opencrust_security::InputValidator::exceeds_length(&text, max_input_chars) {
+                        return Err(format!(
+                            "input rejected: message exceeds {max_input_chars} character limit"
+                        ));
                     }
 
                     state
@@ -2227,6 +2310,10 @@ pub fn build_whatsapp_web_channels(
                             .await;
                     }
 
+                    let response = opencrust_security::InputValidator::truncate_output(
+                        &response,
+                        max_output_chars,
+                    );
                     Ok(response)
                 })
             },
@@ -2293,6 +2380,8 @@ pub fn build_imessage_channels(
         let allowlist_for_cb = Arc::clone(&allowlist);
         let pairing_for_cb = Arc::clone(&pairing);
         let policy_for_cb = Arc::clone(&policy);
+        let max_input_chars = config.guardrails.max_input_chars;
+        let max_output_chars = config.guardrails.max_output_chars;
 
         let on_message: IMessageOnMessageFn = Arc::new(
             move |session_key: String,
@@ -2325,6 +2414,11 @@ pub fn build_imessage_channels(
                         return Err(
                             "input rejected: potential prompt injection detected".to_string()
                         );
+                    }
+                    if opencrust_security::InputValidator::exceeds_length(&text, max_input_chars) {
+                        return Err(format!(
+                            "input rejected: message exceeds {max_input_chars} character limit"
+                        ));
                     }
 
                     state
@@ -2371,6 +2465,10 @@ pub fn build_imessage_channels(
                             .await;
                     }
 
+                    let response = opencrust_security::InputValidator::truncate_output(
+                        &response,
+                        max_output_chars,
+                    );
                     Ok(response)
                 })
             },
@@ -2460,6 +2558,8 @@ pub fn build_line_channels(
         let allowlist_for_cb = Arc::clone(&allowlist);
         let pairing_for_cb = Arc::clone(&pairing);
         let policy_for_cb = Arc::clone(&policy);
+        let max_input_chars = config.guardrails.max_input_chars;
+        let max_output_chars = config.guardrails.max_output_chars;
 
         let on_message: LineOnMessageFn = Arc::new(
             move |user_id: String,
@@ -2495,6 +2595,11 @@ pub fn build_line_channels(
                         return Err(
                             "input rejected: potential prompt injection detected".to_string()
                         );
+                    }
+                    if opencrust_security::InputValidator::exceeds_length(&text, max_input_chars) {
+                        return Err(format!(
+                            "input rejected: message exceeds {max_input_chars} character limit"
+                        ));
                     }
 
                     state
@@ -2555,6 +2660,10 @@ pub fn build_line_channels(
                             .await;
                     }
 
+                    let response = opencrust_security::InputValidator::truncate_output(
+                        &response,
+                        max_output_chars,
+                    );
                     Ok(response)
                 })
             },
@@ -2645,6 +2754,8 @@ pub fn build_wechat_channels(
         let allowlist_for_cb = Arc::clone(&allowlist);
         let pairing_for_cb = Arc::clone(&pairing);
         let policy_for_cb = Arc::clone(&policy);
+        let max_input_chars = config.guardrails.max_input_chars;
+        let max_output_chars = config.guardrails.max_output_chars;
 
         let on_message: WeChatOnMessageFn = Arc::new(
             move |user_id: String,
@@ -2675,6 +2786,11 @@ pub fn build_wechat_channels(
                         return Err(
                             "input rejected: potential prompt injection detected".to_string()
                         );
+                    }
+                    if opencrust_security::InputValidator::exceeds_length(&text, max_input_chars) {
+                        return Err(format!(
+                            "input rejected: message exceeds {max_input_chars} character limit"
+                        ));
                     }
 
                     state
@@ -2735,6 +2851,10 @@ pub fn build_wechat_channels(
                             .await;
                     }
 
+                    let response = opencrust_security::InputValidator::truncate_output(
+                        &response,
+                        max_output_chars,
+                    );
                     Ok(response)
                 })
             },

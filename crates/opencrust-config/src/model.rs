@@ -38,6 +38,9 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub tools: ToolsConfig,
+
+    #[serde(default)]
+    pub guardrails: GuardrailsConfig,
 }
 
 impl Default for AppConfig {
@@ -54,6 +57,7 @@ impl Default for AppConfig {
             mcp: HashMap::new(),
             agents: HashMap::new(),
             tools: ToolsConfig::default(),
+            guardrails: GuardrailsConfig::default(),
         }
     }
 }
@@ -91,6 +95,18 @@ pub struct RateLimitConfig {
 
     #[serde(default = "default_rate_burst_size")]
     pub burst_size: u32,
+
+    /// Max messages per user per minute across all channels (default: 20).
+    #[serde(default = "default_per_user_per_minute")]
+    pub per_user_per_minute: u32,
+
+    /// Burst allowance before per-user throttling kicks in (default: 5).
+    #[serde(default = "default_per_user_burst")]
+    pub per_user_burst: u32,
+
+    /// Seconds a user is silenced after exceeding burst (default: 0 = disabled).
+    #[serde(default)]
+    pub cooldown_secs: u32,
 }
 
 impl Default for RateLimitConfig {
@@ -98,6 +114,9 @@ impl Default for RateLimitConfig {
         Self {
             per_second: default_rate_per_second(),
             burst_size: default_rate_burst_size(),
+            per_user_per_minute: default_per_user_per_minute(),
+            per_user_burst: default_per_user_burst(),
+            cooldown_secs: 0,
         }
     }
 }
@@ -108,6 +127,14 @@ fn default_rate_per_second() -> u64 {
 
 fn default_rate_burst_size() -> u32 {
     60
+}
+
+fn default_per_user_per_minute() -> u32 {
+    20
+}
+
+fn default_per_user_burst() -> u32 {
+    5
 }
 
 fn default_host() -> String {
@@ -221,6 +248,77 @@ pub struct WebSearchConfig {
     pub provider: String,
     pub api_key: Option<String>,
     pub search_engine_id: Option<String>,
+}
+
+/// Safety, rate limiting, and cost controls applied across all channels.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GuardrailsConfig {
+    /// Max input message length in characters. Messages exceeding this are rejected.
+    /// Default: 16000.
+    #[serde(default = "default_max_input_chars")]
+    pub max_input_chars: usize,
+
+    /// Max response length in characters. Responses are truncated if exceeded.
+    /// Default: 32000.
+    #[serde(default = "default_max_output_chars")]
+    pub max_output_chars: usize,
+
+    /// Enable content filtering on bot responses (harmful content, PII patterns).
+    /// Default: false.
+    #[serde(default)]
+    pub content_filter_enabled: bool,
+
+    /// Max input + output tokens per session before the agent stops. None = unlimited.
+    #[serde(default)]
+    pub token_budget_session: Option<u32>,
+
+    /// Max tokens per user per day across all sessions. None = unlimited.
+    #[serde(default)]
+    pub token_budget_user_daily: Option<u32>,
+
+    /// Max tokens per user per month across all sessions. None = unlimited.
+    #[serde(default)]
+    pub token_budget_user_monthly: Option<u32>,
+
+    /// Hard spending cap in USD. None = unlimited.
+    #[serde(default)]
+    pub spending_cap_usd: Option<f64>,
+
+    /// Alert threshold as a percentage of spending_cap_usd (default: 80).
+    #[serde(default = "default_spending_alert_pct")]
+    pub spending_alert_pct: u8,
+
+    /// Max tool calls per session (separate from the 10-iteration loop cap). None = loop-cap only.
+    #[serde(default)]
+    pub session_tool_call_budget: Option<u32>,
+}
+
+impl Default for GuardrailsConfig {
+    fn default() -> Self {
+        Self {
+            max_input_chars: default_max_input_chars(),
+            max_output_chars: default_max_output_chars(),
+            content_filter_enabled: false,
+            token_budget_session: None,
+            token_budget_user_daily: None,
+            token_budget_user_monthly: None,
+            spending_cap_usd: None,
+            spending_alert_pct: default_spending_alert_pct(),
+            session_tool_call_budget: None,
+        }
+    }
+}
+
+fn default_max_input_chars() -> usize {
+    16_000
+}
+
+fn default_max_output_chars() -> usize {
+    32_000
+}
+
+fn default_spending_alert_pct() -> u8 {
+    80
 }
 
 fn default_memory_enabled() -> bool {
