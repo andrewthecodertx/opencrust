@@ -130,6 +130,7 @@ mod tests {
             session_id: "test".into(),
             user_id: None,
             heartbeat_depth: 0,
+            allowed_tools: None,
         };
         let output = tool
             .execute(
@@ -154,6 +155,7 @@ mod tests {
             session_id: "test".into(),
             user_id: None,
             heartbeat_depth: 0,
+            allowed_tools: None,
         };
         assert!(tool.execute(&ctx, serde_json::json!({})).await.is_err());
         assert!(

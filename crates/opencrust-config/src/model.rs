@@ -291,6 +291,11 @@ pub struct GuardrailsConfig {
     /// Max tool calls per session (separate from the 10-iteration loop cap). None = loop-cap only.
     #[serde(default)]
     pub session_tool_call_budget: Option<u32>,
+
+    /// Allowlist of tool names the agent may call. `None` means all registered tools are permitted.
+    /// Empty list means no tools may be called.
+    #[serde(default)]
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 impl Default for GuardrailsConfig {
@@ -305,6 +310,7 @@ impl Default for GuardrailsConfig {
             spending_cap_usd: None,
             spending_alert_pct: default_spending_alert_pct(),
             session_tool_call_budget: None,
+            allowed_tools: None,
         }
     }
 }

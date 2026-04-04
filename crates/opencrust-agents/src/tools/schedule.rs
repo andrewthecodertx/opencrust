@@ -403,6 +403,7 @@ mod tests {
             session_id: session_id.to_string(),
             user_id: Some("u-1".to_string()),
             heartbeat_depth: 0,
+            allowed_tools: None,
         }
     }
 
@@ -523,6 +524,7 @@ mod tests {
             session_id: "sess-1".to_string(),
             user_id: Some("u-1".to_string()),
             heartbeat_depth: MAX_HEARTBEAT_DEPTH,
+            allowed_tools: None,
         };
 
         let err = tool
@@ -545,6 +547,7 @@ mod tests {
             session_id: "sess-1".to_string(),
             user_id: Some("u-1".to_string()),
             heartbeat_depth: MAX_HEARTBEAT_DEPTH - 1,
+            allowed_tools: None,
         };
 
         let out = tool
@@ -618,6 +621,7 @@ mod tests {
                     session_id: "s2".to_string(),
                     user_id: Some("u2".to_string()),
                     heartbeat_depth: 0,
+                    allowed_tools: None,
                 },
                 serde_json::json!({ "delay_seconds": 60, "reason": "s2 ok" }),
             )
@@ -707,6 +711,7 @@ mod tests {
                     session_id: "s2".to_string(),
                     user_id: Some("u2".to_string()),
                     heartbeat_depth: 0,
+                    allowed_tools: None,
                 },
                 serde_json::json!({ "task_id": task_id }),
             )

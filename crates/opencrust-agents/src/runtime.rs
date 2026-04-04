@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
+use dashmap::DashMap;
+
 use futures::StreamExt;
 use futures::future::join_all;
 use opencrust_common::{Error, Result};
@@ -34,6 +36,17 @@ pub struct AgentRuntime {
     /// Accumulated token usage per session, keyed by session_id.
     /// Tuple: (input_tokens, output_tokens, provider_id, model).
     usage_accumulator: Mutex<HashMap<String, (u32, u32, String, String)>>,
+    /// Per-session tool configuration: (allowed_tools, call_count, budget).
+    /// `allowed_tools = None` means all tools allowed.
+    session_tool_config: DashMap<String, SessionToolConfig>,
+}
+
+/// Per-session tool configuration set before processing a message.
+#[derive(Debug, Clone, Default)]
+struct SessionToolConfig {
+    allowed_tools: Option<Vec<String>>,
+    call_count: u32,
+    budget: Option<u32>,
 }
 
 impl AgentRuntime {
@@ -51,6 +64,7 @@ impl AgentRuntime {
             recall_limit: 10,
             summarization_enabled: true,
             usage_accumulator: Mutex::new(HashMap::new()),
+            session_tool_config: DashMap::new(),
         }
     }
 
@@ -123,6 +137,74 @@ impl AgentRuntime {
     /// Drain and return the accumulated usage for a session, if any.
     pub fn take_session_usage(&self, session_id: &str) -> Option<(u32, u32, String, String)> {
         self.usage_accumulator.lock().unwrap().remove(session_id)
+    }
+
+    /// Set the tool configuration for a session before processing a message.
+    /// `allowed_tools = None` means all tools are permitted.
+    /// `budget = None` means no per-session call-count cap.
+    pub fn set_session_tool_config(
+        &self,
+        session_id: &str,
+        allowed_tools: Option<Vec<String>>,
+        budget: Option<u32>,
+    ) {
+        self.session_tool_config.insert(
+            session_id.to_string(),
+            SessionToolConfig {
+                allowed_tools,
+                call_count: 0,
+                budget,
+            },
+        );
+    }
+
+    /// Remove the tool configuration for a session (called during cleanup).
+    pub fn clear_session_tool_config(&self, session_id: &str) {
+        self.session_tool_config.remove(session_id);
+    }
+
+    /// Retain only configs whose session IDs satisfy the predicate.
+    /// Used by the gateway cleanup task to evict expired sessions.
+    pub fn retain_session_tool_configs<F>(&self, f: F)
+    where
+        F: Fn(&str) -> bool,
+    {
+        self.session_tool_config.retain(|id, _| f(id));
+    }
+
+    /// Return the `allowed_tools` list for a session (used to populate `ToolContext`).
+    fn session_allowed_tools(&self, session_id: &str) -> Option<Vec<String>> {
+        self.session_tool_config
+            .get(session_id)
+            .and_then(|cfg| cfg.allowed_tools.clone())
+    }
+
+    /// Check whether `tool_name` may be executed for this session and increment
+    /// the call counter. Returns an error if the tool is blocked or the budget
+    /// has been exhausted.
+    fn check_tool_allowed(&self, session_id: &str, tool_name: &str) -> Result<()> {
+        if let Some(mut cfg) = self.session_tool_config.get_mut(session_id) {
+            // Enforce allowlist
+            if let Some(ref allowed) = cfg.allowed_tools
+                && !allowed.iter().any(|t| t.as_str() == tool_name)
+            {
+                return Err(Error::Agent(format!(
+                    "tool '{}' is not permitted for this session",
+                    tool_name
+                )));
+            }
+            // Enforce budget
+            if let Some(budget) = cfg.budget
+                && cfg.call_count >= budget
+            {
+                return Err(Error::Agent(format!(
+                    "tool call budget of {} exhausted for session",
+                    budget
+                )));
+            }
+            cfg.call_count += 1;
+        }
+        Ok(())
     }
 
     pub fn register_provider(&self, provider: Arc<dyn LlmProvider>) {
@@ -628,13 +710,17 @@ impl AgentRuntime {
                         session_id: session_id.to_string(),
                         user_id: user_id.map(|s| s.to_string()),
                         heartbeat_depth: 0,
+                        allowed_tools: self.session_allowed_tools(session_id),
                     };
-                    let output = match self.find_tool(name) {
-                        Some(tool) => tool
-                            .execute(&context, input.clone())
-                            .await
-                            .unwrap_or_else(|e| ToolOutput::error(e.to_string())),
-                        None => ToolOutput::error(format!("unknown tool: {}", name)),
+                    let output = match self.check_tool_allowed(session_id, name) {
+                        Err(e) => ToolOutput::error(e.to_string()),
+                        Ok(()) => match self.find_tool(name) {
+                            Some(tool) => tool
+                                .execute(&context, input.clone())
+                                .await
+                                .unwrap_or_else(|e| ToolOutput::error(e.to_string())),
+                            None => ToolOutput::error(format!("unknown tool: {}", name)),
+                        },
                     };
                     tool_results.push(ContentBlock::ToolResult {
                         tool_use_id: id.clone(),
@@ -800,13 +886,17 @@ impl AgentRuntime {
                         session_id: session_id.to_string(),
                         user_id: user_id.map(|s| s.to_string()),
                         heartbeat_depth: 0,
+                        allowed_tools: self.session_allowed_tools(session_id),
                     };
-                    let output = match self.find_tool(name) {
-                        Some(tool) => tool
-                            .execute(&context, input.clone())
-                            .await
-                            .unwrap_or_else(|e| ToolOutput::error(e.to_string())),
-                        None => ToolOutput::error(format!("unknown tool: {}", name)),
+                    let output = match self.check_tool_allowed(session_id, name) {
+                        Err(e) => ToolOutput::error(e.to_string()),
+                        Ok(()) => match self.find_tool(name) {
+                            Some(tool) => tool
+                                .execute(&context, input.clone())
+                                .await
+                                .unwrap_or_else(|e| ToolOutput::error(e.to_string())),
+                            None => ToolOutput::error(format!("unknown tool: {}", name)),
+                        },
                     };
                     tool_results.push(ContentBlock::ToolResult {
                         tool_use_id: id.clone(),
@@ -938,13 +1028,17 @@ impl AgentRuntime {
                         session_id: session_id.to_string(),
                         user_id: user_id.map(|s| s.to_string()),
                         heartbeat_depth,
+                        allowed_tools: self.session_allowed_tools(session_id),
                     };
-                    let output = match self.find_tool(name) {
-                        Some(tool) => tool
-                            .execute(&context, input.clone())
-                            .await
-                            .unwrap_or_else(|e| ToolOutput::error(e.to_string())),
-                        None => ToolOutput::error(format!("unknown tool: {}", name)),
+                    let output = match self.check_tool_allowed(session_id, name) {
+                        Err(e) => ToolOutput::error(e.to_string()),
+                        Ok(()) => match self.find_tool(name) {
+                            Some(tool) => tool
+                                .execute(&context, input.clone())
+                                .await
+                                .unwrap_or_else(|e| ToolOutput::error(e.to_string())),
+                            None => ToolOutput::error(format!("unknown tool: {}", name)),
+                        },
                     };
                     tool_results.push(ContentBlock::ToolResult {
                         tool_use_id: id.clone(),
@@ -1215,13 +1309,17 @@ impl AgentRuntime {
                             session_id: session_id.to_string(),
                             user_id: user_id.map(|s| s.to_string()),
                             heartbeat_depth: 0,
+                            allowed_tools: self.session_allowed_tools(session_id),
                         };
-                        let output = match self.find_tool(name) {
-                            Some(tool) => tool
-                                .execute(&context, input)
-                                .await
-                                .unwrap_or_else(|e| ToolOutput::error(e.to_string())),
-                            None => ToolOutput::error(format!("unknown tool: {}", name)),
+                        let output = match self.check_tool_allowed(session_id, name) {
+                            Err(e) => ToolOutput::error(e.to_string()),
+                            Ok(()) => match self.find_tool(name) {
+                                Some(tool) => tool
+                                    .execute(&context, input)
+                                    .await
+                                    .unwrap_or_else(|e| ToolOutput::error(e.to_string())),
+                                None => ToolOutput::error(format!("unknown tool: {}", name)),
+                            },
                         };
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
@@ -1292,13 +1390,17 @@ impl AgentRuntime {
                                 session_id: session_id.to_string(),
                                 user_id: user_id.map(|s| s.to_string()),
                                 heartbeat_depth: 0,
+                                allowed_tools: self.session_allowed_tools(session_id),
                             };
-                            let output = match self.find_tool(name) {
-                                Some(tool) => tool
-                                    .execute(&context, input.clone())
-                                    .await
-                                    .unwrap_or_else(|e| ToolOutput::error(e.to_string())),
-                                None => ToolOutput::error(format!("unknown tool: {}", name)),
+                            let output = match self.check_tool_allowed(session_id, name) {
+                                Err(e) => ToolOutput::error(e.to_string()),
+                                Ok(()) => match self.find_tool(name) {
+                                    Some(tool) => tool
+                                        .execute(&context, input.clone())
+                                        .await
+                                        .unwrap_or_else(|e| ToolOutput::error(e.to_string())),
+                                    None => ToolOutput::error(format!("unknown tool: {}", name)),
+                                },
                             };
                             tool_results.push(ContentBlock::ToolResult {
                                 tool_use_id: id.clone(),
@@ -1460,13 +1562,17 @@ impl AgentRuntime {
                         session_id: session_id.to_string(),
                         user_id: user_id.map(|s| s.to_string()),
                         heartbeat_depth,
+                        allowed_tools: self.session_allowed_tools(session_id),
                     };
-                    let output = match self.find_tool(name) {
-                        Some(tool) => tool
-                            .execute(&context, input.clone())
-                            .await
-                            .unwrap_or_else(|e| ToolOutput::error(e.to_string())),
-                        None => ToolOutput::error(format!("unknown tool: {}", name)),
+                    let output = match self.check_tool_allowed(session_id, name) {
+                        Err(e) => ToolOutput::error(e.to_string()),
+                        Ok(()) => match self.find_tool(name) {
+                            Some(tool) => tool
+                                .execute(&context, input.clone())
+                                .await
+                                .unwrap_or_else(|e| ToolOutput::error(e.to_string())),
+                            None => ToolOutput::error(format!("unknown tool: {}", name)),
+                        },
                     };
                     tool_results.push(ContentBlock::ToolResult {
                         tool_use_id: id.clone(),
@@ -1687,13 +1793,17 @@ impl AgentRuntime {
                             session_id: session_id.to_string(),
                             user_id: user_id.map(|s| s.to_string()),
                             heartbeat_depth: 0,
+                            allowed_tools: self.session_allowed_tools(session_id),
                         };
-                        let output = match self.find_tool(name) {
-                            Some(tool) => tool
-                                .execute(&context, input)
-                                .await
-                                .unwrap_or_else(|e| ToolOutput::error(e.to_string())),
-                            None => ToolOutput::error(format!("unknown tool: {}", name)),
+                        let output = match self.check_tool_allowed(session_id, name) {
+                            Err(e) => ToolOutput::error(e.to_string()),
+                            Ok(()) => match self.find_tool(name) {
+                                Some(tool) => tool
+                                    .execute(&context, input)
+                                    .await
+                                    .unwrap_or_else(|e| ToolOutput::error(e.to_string())),
+                                None => ToolOutput::error(format!("unknown tool: {}", name)),
+                            },
                         };
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
@@ -1752,13 +1862,17 @@ impl AgentRuntime {
                                 session_id: session_id.to_string(),
                                 user_id: user_id.map(|s| s.to_string()),
                                 heartbeat_depth: 0,
+                                allowed_tools: self.session_allowed_tools(session_id),
                             };
-                            let output = match self.find_tool(name) {
-                                Some(tool) => tool
-                                    .execute(&context, input.clone())
-                                    .await
-                                    .unwrap_or_else(|e| ToolOutput::error(e.to_string())),
-                                None => ToolOutput::error(format!("unknown tool: {}", name)),
+                            let output = match self.check_tool_allowed(session_id, name) {
+                                Err(e) => ToolOutput::error(e.to_string()),
+                                Ok(()) => match self.find_tool(name) {
+                                    Some(tool) => tool
+                                        .execute(&context, input.clone())
+                                        .await
+                                        .unwrap_or_else(|e| ToolOutput::error(e.to_string())),
+                                    None => ToolOutput::error(format!("unknown tool: {}", name)),
+                                },
                             };
                             tool_results.push(ContentBlock::ToolResult {
                                 tool_use_id: id.clone(),
@@ -2337,5 +2451,66 @@ mod tests {
         let mut runtime = AgentRuntime::new();
         runtime.set_summarization_enabled(false);
         assert!(!runtime.summarization_enabled);
+    }
+
+    // --- Tool safety ---
+
+    #[test]
+    fn set_session_tool_config_and_check_allowed_tool() {
+        let runtime = AgentRuntime::new();
+        runtime.set_session_tool_config("sess", Some(vec!["bash".to_string()]), None);
+        assert!(runtime.check_tool_allowed("sess", "bash").is_ok());
+        assert!(runtime.check_tool_allowed("sess", "file_read").is_err());
+    }
+
+    #[test]
+    fn check_tool_allowed_permits_all_when_no_config() {
+        let runtime = AgentRuntime::new();
+        // No config set — all tools pass
+        assert!(runtime.check_tool_allowed("sess", "any_tool").is_ok());
+    }
+
+    #[test]
+    fn check_tool_allowed_permits_all_when_allowed_tools_is_none() {
+        let runtime = AgentRuntime::new();
+        runtime.set_session_tool_config("sess", None, None);
+        assert!(runtime.check_tool_allowed("sess", "bash").is_ok());
+        assert!(runtime.check_tool_allowed("sess", "file_read").is_ok());
+    }
+
+    #[test]
+    fn budget_exhaustion_blocks_tool_call() {
+        let runtime = AgentRuntime::new();
+        runtime.set_session_tool_config("sess", None, Some(2));
+        assert!(runtime.check_tool_allowed("sess", "bash").is_ok()); // call 1
+        assert!(runtime.check_tool_allowed("sess", "bash").is_ok()); // call 2
+        let err = runtime.check_tool_allowed("sess", "bash"); // call 3 → blocked
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("budget"));
+    }
+
+    #[test]
+    fn retain_session_tool_configs_removes_evicted_sessions() {
+        let runtime = AgentRuntime::new();
+        runtime.set_session_tool_config("keep", Some(vec!["bash".to_string()]), None);
+        runtime.set_session_tool_config("drop", None, None);
+        runtime.retain_session_tool_configs(|id| id == "keep");
+        assert!(runtime.check_tool_allowed("keep", "bash").is_ok());
+        // "drop" has no config → passes through (None config = all allowed)
+        assert!(runtime.check_tool_allowed("drop", "bash").is_ok());
+    }
+
+    #[test]
+    fn session_allowed_tools_returns_none_when_no_config() {
+        let runtime = AgentRuntime::new();
+        assert!(runtime.session_allowed_tools("sess").is_none());
+    }
+
+    #[test]
+    fn session_allowed_tools_returns_configured_list() {
+        let runtime = AgentRuntime::new();
+        let tools = vec!["bash".to_string(), "web_search".to_string()];
+        runtime.set_session_tool_config("sess", Some(tools.clone()), None);
+        assert_eq!(runtime.session_allowed_tools("sess"), Some(tools));
     }
 }

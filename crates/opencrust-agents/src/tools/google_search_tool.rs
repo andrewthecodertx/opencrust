@@ -150,6 +150,7 @@ mod tests {
             session_id: "test".into(),
             user_id: None,
             heartbeat_depth: 0,
+            allowed_tools: None,
         }
     }
 
