@@ -58,6 +58,11 @@
     <div class="main-wrapper">
       <header class="topbar">
         <div class="topbar-actions">
+          <div class="font-size-controls" aria-label="Font size">
+            <button class="font-size-btn" id="font-size-sm" title="Small text">A−</button>
+            <button class="font-size-btn" id="font-size-md" title="Default text">A</button>
+            <button class="font-size-btn" id="font-size-lg" title="Large text">A+</button>
+          </div>
           <button id="theme-toggle" class="theme-toggle" type="button">Dark Mode</button>
           <div class="pill" id="conn-pill"><span class="offline">Disconnected</span></div>
         </div>
@@ -227,6 +232,33 @@
                 <input id="provider-api-key" type="password" placeholder="Enter API key..." autocomplete="off"
                   class="provider-key-input">
                 <button id="provider-activate" class="provider-activate-btn">Save & Activate</button>
+              </div>
+            </div>
+
+            <hr class="divider">
+
+            <div class="status-group">
+              <h3>Token Usage</h3>
+              <div class="status-row">
+                <span>Input tokens</span>
+                <span id="usage-input">—</span>
+              </div>
+              <div class="status-row">
+                <span>Output tokens</span>
+                <span id="usage-output">—</span>
+              </div>
+              <div class="status-row">
+                <span>Total tokens</span>
+                <span id="usage-total">—</span>
+              </div>
+              <div class="status-row">
+                <span>Period</span>
+                <select id="usage-period" class="provider-select" style="width:auto;font-size:0.8rem;padding:2px 4px;">
+                  <option value="">All time</option>
+                  <option value="today">Today</option>
+                  <option value="week">Last 7 days</option>
+                  <option value="month">Last 30 days</option>
+                </select>
               </div>
             </div>
 

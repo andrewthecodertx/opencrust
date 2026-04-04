@@ -117,6 +117,7 @@ pub fn build_router(
             get(handle_google_integration_callback),
         )
         .route("/api/mcp", get(list_mcp_servers))
+        .route("/api/usage", get(get_usage))
         // A2A protocol endpoints
         .route("/.well-known/agent.json", get(a2a::agent_card))
         .route("/a2a/tasks", post(a2a::create_task))
@@ -280,6 +281,44 @@ async fn get_vault_status() -> axum::Json<serde_json::Value> {
         "vault_exists": vault_exists,
         "unlocked": unlocked,
     }))
+}
+
+/// GET /api/usage?session_id=<id>&period=today|week|month — aggregated token usage.
+async fn get_usage(
+    axum::extract::State(state): axum::extract::State<SharedState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> axum::Json<serde_json::Value> {
+    let session_id = params.get("session_id").map(|s| s.as_str());
+    let period = params.get("period").map(|s| s.as_str());
+
+    let Some(store) = &state.session_store else {
+        return axum::Json(serde_json::json!({
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+        }));
+    };
+
+    let result = {
+        let guard = store.lock().await;
+        guard.query_usage(session_id, period)
+    };
+
+    match result {
+        Ok(record) => axum::Json(serde_json::json!({
+            "input_tokens": record.input_tokens,
+            "output_tokens": record.output_tokens,
+            "total_tokens": record.total_tokens,
+        })),
+        Err(e) => {
+            tracing::warn!("failed to query usage: {e}");
+            axum::Json(serde_json::json!({
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+            }))
+        }
+    }
 }
 
 /// GET /api/integrations/google — current Google integration state.

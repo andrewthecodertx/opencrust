@@ -101,6 +101,27 @@ function initTheme() {
   setTheme(prefersDark ? "dark" : "light");
 }
 
+const fontSizeStorageKey = "opencrust.ui.font_size";
+// Root font-size values — all rem-based CSS scales with this
+const fontSizes = { sm: "14px", md: "18px", lg: "22px" };
+
+function setFontSize(size, persist = true) {
+  document.documentElement.style.fontSize = fontSizes[size] || fontSizes.md;
+  document.querySelectorAll(".font-size-btn").forEach((btn) => btn.classList.remove("active"));
+  const btn = document.getElementById(`font-size-${size}`);
+  if (btn) btn.classList.add("active");
+  if (persist) localStorage.setItem(fontSizeStorageKey, size);
+}
+
+function initFontSize() {
+  const stored = localStorage.getItem(fontSizeStorageKey);
+  setFontSize(stored && fontSizes[stored] ? stored : "md", false);
+}
+
+document.getElementById("font-size-sm").addEventListener("click", () => setFontSize("sm"));
+document.getElementById("font-size-md").addEventListener("click", () => setFontSize("md"));
+document.getElementById("font-size-lg").addEventListener("click", () => setFontSize("lg"));
+
 function wsUrl() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const base = `${proto}//${location.host}/ws`;
@@ -492,6 +513,47 @@ async function refreshStatus() {
   }
 
   loadProviders();
+  loadUsage();
+}
+
+async function loadSessionHistory(sid) {
+  try {
+    const headers = gatewayKey ? { Authorization: `Bearer ${gatewayKey}` } : {};
+    const r = await fetch(`/api/sessions/${encodeURIComponent(sid)}/history`, { headers });
+    if (!r.ok) return;
+    const j = await r.json();
+    const msgs = j.messages || [];
+    if (msgs.length === 0) return;
+    chatEl.querySelectorAll(".msg").forEach((m) => m.remove());
+    for (const msg of msgs) {
+      appendMessage(msg.role === "assistant" ? "assistant" : "user", msg.content);
+    }
+    appendMessage("sys", `Session restored (${msgs.length} messages).`);
+  } catch {
+    // silently ignore — chat will just be empty
+  }
+}
+
+async function loadUsage() {
+  const periodEl = document.getElementById("usage-period");
+  const period = periodEl ? periodEl.value : "";
+  const url = period ? `/api/usage?period=${encodeURIComponent(period)}` : "/api/usage";
+  try {
+    const r = await fetch(url);
+    const j = await r.json();
+    const fmt = (n) => (typeof n === "number" ? n.toLocaleString() : "—");
+    const inputEl = document.getElementById("usage-input");
+    const outputEl = document.getElementById("usage-output");
+    const totalEl = document.getElementById("usage-total");
+    if (inputEl) inputEl.textContent = fmt(j.input_tokens);
+    if (outputEl) outputEl.textContent = fmt(j.output_tokens);
+    if (totalEl) totalEl.textContent = fmt(j.total_tokens);
+  } catch {
+    ["usage-input", "usage-output", "usage-total"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = "—";
+    });
+  }
 }
 
 async function loadProviders() {
@@ -672,11 +734,14 @@ function handleServerEvent(raw) {
       refreshStatus();
       break;
     case "resumed":
-      appendMessage("sys", `Session resumed (${evt.history_length ?? 0} messages in history).`);
       refreshStatus();
+      if (evt.history_length && evt.history_length > 0) {
+        loadSessionHistory(evt.session_id || sessionId);
+      }
       break;
     case "message":
       appendOrUpdateStreamMessage("assistant", evt.content || "(empty response)");
+      loadUsage();
       break;
     case "error":
       setAgentThinking(false);
@@ -772,6 +837,9 @@ clearBtn.addEventListener("click", () => {
 });
 
 refreshBtn.addEventListener("click", refreshStatus);
+
+const usagePeriodEl = document.getElementById("usage-period");
+if (usagePeriodEl) usagePeriodEl.addEventListener("change", loadUsage);
 
 updateBannerClose.addEventListener("click", () => {
   updateBanner.style.display = "none";
@@ -869,6 +937,7 @@ navItems.integrations.addEventListener("click", async () => {
 // Boot: check if auth is required, then connect
 async function boot() {
   initTheme();
+  initFontSize();
   try {
     if (integrationsView) await integrationsView.load();
   } catch (e) {
