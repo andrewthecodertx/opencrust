@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -6,7 +7,7 @@ use std::time::{Duration, Instant};
 use dashmap::DashMap;
 use opencrust_agents::{AgentRuntime, ChatMessage};
 use opencrust_channels::ChannelRegistry;
-use opencrust_config::AppConfig;
+use opencrust_config::{AppConfig, model::RateLimitConfig};
 use opencrust_db::SessionStore;
 use tokio::sync::{Mutex, watch};
 use tracing::{info, warn};
@@ -16,6 +17,16 @@ use uuid::Uuid;
 const SESSION_TTL: Duration = Duration::from_secs(3600); // 1 hour
 /// How often the cleanup task runs.
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(300); // 5 minutes
+/// Sliding window for per-user rate limiting.
+const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
+
+/// Per-user rate limit tracking entry.
+struct UserRateLimitEntry {
+    /// Timestamps of recent messages within the sliding window.
+    timestamps: VecDeque<Instant>,
+    /// If set, the user is in cooldown until this instant.
+    cooldown_until: Option<Instant>,
+}
 
 /// Shared application state accessible from all request handlers.
 pub struct AppState {
@@ -43,6 +54,8 @@ pub struct AppState {
     google_oauth_runtime_config: RwLock<Option<GoogleOAuthRuntimeConfig>>,
     /// Receives hot-reloaded config updates. `None` if watcher is not active.
     config_rx: Option<watch::Receiver<AppConfig>>,
+    /// Per-user rate limit state, keyed by user_id.
+    user_rate_limits: DashMap<String, UserRateLimitEntry>,
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +96,7 @@ impl AppState {
             google_oauth_states: DashMap::new(),
             google_oauth_runtime_config: RwLock::new(None),
             config_rx: None,
+            user_rate_limits: DashMap::new(),
         }
     }
 
@@ -166,6 +180,80 @@ impl AppState {
             .read()
             .ok()
             .and_then(|cfg| cfg.clone())
+    }
+
+    /// Check and update per-user rate limits.
+    ///
+    /// Returns `Err` with a human-readable message if the user should be throttled.
+    /// On success, records the current message timestamp for future checks.
+    ///
+    /// Logic:
+    /// 1. If user is in cooldown → reject immediately.
+    /// 2. Evict timestamps older than 60 s from the sliding window.
+    /// 3. If the last `per_user_burst` messages all arrived within 1 s and
+    ///    `cooldown_secs > 0` → place user in cooldown and reject.
+    /// 4. If message count in window >= `per_user_per_minute` → reject.
+    /// 5. Record timestamp and allow.
+    pub fn check_user_rate_limit(
+        &self,
+        user_id: &str,
+        config: &RateLimitConfig,
+    ) -> std::result::Result<(), String> {
+        let now = Instant::now();
+
+        let mut entry = self
+            .user_rate_limits
+            .entry(user_id.to_string())
+            .or_insert_with(|| UserRateLimitEntry {
+                timestamps: VecDeque::new(),
+                cooldown_until: None,
+            });
+
+        // 1. Active cooldown check.
+        if let Some(until) = entry.cooldown_until {
+            if now < until {
+                let remaining = (until - now).as_secs() + 1;
+                return Err(format!(
+                    "rate limit: please wait {remaining}s before sending another message"
+                ));
+            }
+            entry.cooldown_until = None;
+        }
+
+        // 2. Evict timestamps outside the sliding window.
+        while entry
+            .timestamps
+            .front()
+            .map(|t| now.duration_since(*t) > RATE_LIMIT_WINDOW)
+            .unwrap_or(false)
+        {
+            entry.timestamps.pop_front();
+        }
+
+        // 3. Burst detection → cooldown.
+        let burst = config.per_user_burst as usize;
+        if config.cooldown_secs > 0 && burst > 0 && entry.timestamps.len() >= burst {
+            let oldest_burst = entry.timestamps[entry.timestamps.len() - burst];
+            if now.duration_since(oldest_burst) < Duration::from_secs(1) {
+                entry.cooldown_until = Some(now + Duration::from_secs(config.cooldown_secs as u64));
+                return Err(format!(
+                    "rate limit: too many messages too fast — please wait {}s",
+                    config.cooldown_secs
+                ));
+            }
+        }
+
+        // 4. Per-minute cap.
+        if entry.timestamps.len() >= config.per_user_per_minute as usize {
+            return Err(format!(
+                "rate limit: you have sent too many messages — maximum {} per minute",
+                config.per_user_per_minute
+            ));
+        }
+
+        // 5. Record and allow.
+        entry.timestamps.push_back(now);
+        Ok(())
     }
 
     pub fn create_session(&self) -> String {
@@ -589,6 +677,64 @@ mod tests {
         let state = AppState::new(config, AgentRuntime::new(), ChannelRegistry::new());
         let key = state.continuity_key(Some("user1"));
         assert_eq!(key, Some("bus:shared-global".to_string()));
+    }
+
+    fn rate_limit_config(per_minute: u32, burst: u32, cooldown: u32) -> RateLimitConfig {
+        RateLimitConfig {
+            per_second: 1,
+            burst_size: 60,
+            per_user_per_minute: per_minute,
+            per_user_burst: burst,
+            cooldown_secs: cooldown,
+        }
+    }
+
+    #[test]
+    fn rate_limit_allows_messages_within_limit() {
+        let state = test_state();
+        let cfg = rate_limit_config(5, 3, 0);
+        for _ in 0..5 {
+            assert!(state.check_user_rate_limit("user1", &cfg).is_ok());
+        }
+    }
+
+    #[test]
+    fn rate_limit_rejects_when_per_minute_exceeded() {
+        let state = test_state();
+        let cfg = rate_limit_config(3, 10, 0);
+        for _ in 0..3 {
+            assert!(state.check_user_rate_limit("user1", &cfg).is_ok());
+        }
+        let result = state.check_user_rate_limit("user1", &cfg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("too many messages"));
+    }
+
+    #[test]
+    fn rate_limit_tracks_users_independently() {
+        let state = test_state();
+        let cfg = rate_limit_config(2, 10, 0);
+        assert!(state.check_user_rate_limit("alice", &cfg).is_ok());
+        assert!(state.check_user_rate_limit("alice", &cfg).is_ok());
+        assert!(state.check_user_rate_limit("alice", &cfg).is_err());
+        // bob is unaffected
+        assert!(state.check_user_rate_limit("bob", &cfg).is_ok());
+    }
+
+    #[test]
+    fn rate_limit_cooldown_blocks_after_burst() {
+        let state = test_state();
+        // burst=2, cooldown=30: send 2 messages in <1s → cooldown triggered
+        let cfg = rate_limit_config(20, 2, 30);
+        assert!(state.check_user_rate_limit("user1", &cfg).is_ok());
+        assert!(state.check_user_rate_limit("user1", &cfg).is_ok());
+        // Third message triggers burst detection (2 msgs in <1s)
+        let result = state.check_user_rate_limit("user1", &cfg);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("wait") && err.contains("30s"));
+        // Subsequent message is also blocked by cooldown
+        assert!(state.check_user_rate_limit("user1", &cfg).is_err());
     }
 
     #[test]
