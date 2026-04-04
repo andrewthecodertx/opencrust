@@ -190,4 +190,53 @@ mod tests {
         let too_long = "a".repeat(257);
         assert!(InputValidator::validate_channel_id(&too_long).is_err());
     }
+
+    /// Simulates the guardrail wiring in bootstrap: message >16k chars is rejected.
+    #[test]
+    fn guardrail_rejects_input_over_16k_chars() {
+        let max_input_chars = 16_000usize;
+        let long_input = "a".repeat(16_001);
+
+        // This mirrors: if exceeds_length(&text, max_input_chars) { return Err(...) }
+        let result: std::result::Result<(), String> =
+            if InputValidator::exceeds_length(&long_input, max_input_chars) {
+                Err(format!(
+                    "input rejected: message exceeds {max_input_chars} character limit"
+                ))
+            } else {
+                Ok(())
+            };
+
+        assert_eq!(
+            result,
+            Err("input rejected: message exceeds 16000 character limit".to_string())
+        );
+
+        // Exactly at limit: accepted
+        let at_limit = "a".repeat(16_000);
+        assert!(!InputValidator::exceeds_length(&at_limit, max_input_chars));
+    }
+
+    /// Simulates the guardrail wiring in bootstrap: response >32k chars is truncated.
+    #[test]
+    fn guardrail_truncates_output_over_32k_chars() {
+        let max_output_chars = 32_000usize;
+        let long_response = "x".repeat(32_001);
+
+        // This mirrors: let response = truncate_output(&response, max_output_chars);
+        let response = InputValidator::truncate_output(&long_response, max_output_chars);
+
+        assert!(response.contains("truncated"));
+        assert_eq!(
+            response.chars().take(32_000).collect::<String>(),
+            "x".repeat(32_000)
+        );
+
+        // Within limit: unchanged
+        let short_response = "x".repeat(32_000);
+        assert_eq!(
+            InputValidator::truncate_output(&short_response, max_output_chars),
+            short_response
+        );
+    }
 }
