@@ -102,10 +102,11 @@ function initTheme() {
 }
 
 const fontSizeStorageKey = "opencrust.ui.font_size";
-const fontSizes = { sm: "0.88rem", md: "1rem", lg: "1.18rem" };
+// Root font-size values — all rem-based CSS scales with this
+const fontSizes = { sm: "14px", md: "16px", lg: "18px" };
 
 function setFontSize(size, persist = true) {
-  chatEl.style.fontSize = fontSizes[size] || fontSizes.md;
+  document.documentElement.style.fontSize = fontSizes[size] || fontSizes.md;
   document.querySelectorAll(".font-size-btn").forEach((btn) => btn.classList.remove("active"));
   const btn = document.getElementById(`font-size-${size}`);
   if (btn) btn.classList.add("active");
