@@ -254,6 +254,38 @@ body.ready {
   background: var(--panel);
 }
 
+.font-size-controls {
+  display: flex;
+  gap: 2px;
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  border-radius: 999px;
+  padding: 2px 4px;
+}
+
+.font-size-btn {
+  padding: 3px 7px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  line-height: 1.4;
+  transition: background 0.15s, color 0.15s;
+}
+
+.font-size-btn:hover {
+  background: var(--sand-2);
+  color: var(--ink);
+}
+
+.font-size-btn.active {
+  background: var(--accent, #6366f1);
+  color: #fff;
+}
+
 .brand {
   display: flex;
   align-items: center;

@@ -101,6 +101,26 @@ function initTheme() {
   setTheme(prefersDark ? "dark" : "light");
 }
 
+const fontSizeStorageKey = "opencrust.ui.font_size";
+const fontSizes = { sm: "0.88rem", md: "1rem", lg: "1.18rem" };
+
+function setFontSize(size, persist = true) {
+  chatEl.style.fontSize = fontSizes[size] || fontSizes.md;
+  document.querySelectorAll(".font-size-btn").forEach((btn) => btn.classList.remove("active"));
+  const btn = document.getElementById(`font-size-${size}`);
+  if (btn) btn.classList.add("active");
+  if (persist) localStorage.setItem(fontSizeStorageKey, size);
+}
+
+function initFontSize() {
+  const stored = localStorage.getItem(fontSizeStorageKey);
+  setFontSize(stored && fontSizes[stored] ? stored : "md", false);
+}
+
+document.getElementById("font-size-sm").addEventListener("click", () => setFontSize("sm"));
+document.getElementById("font-size-md").addEventListener("click", () => setFontSize("md"));
+document.getElementById("font-size-lg").addEventListener("click", () => setFontSize("lg"));
+
 function wsUrl() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const base = `${proto}//${location.host}/ws`;
@@ -916,6 +936,7 @@ navItems.integrations.addEventListener("click", async () => {
 // Boot: check if auth is required, then connect
 async function boot() {
   initTheme();
+  initFontSize();
   try {
     if (integrationsView) await integrationsView.load();
   } catch (e) {
