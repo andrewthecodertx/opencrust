@@ -14,7 +14,7 @@
   <a href="https://github.com/opencrust-org/opencrust/stargazers"><img src="https://img.shields.io/github/stars/opencrust-org/opencrust?style=flat" alt="Stars"></a>
   <a href="https://github.com/opencrust-org/opencrust/issues"><img src="https://img.shields.io/github/issues/opencrust-org/opencrust" alt="Issues"></a>
   <a href="https://github.com/opencrust-org/opencrust/issues?q=label%3Agood-first-issue+is%3Aopen"><img src="https://img.shields.io/github/issues/opencrust-org/opencrust/good-first-issue?color=7057ff&label=good%20first%20issues" alt="Good First Issues"></a>
-  <a href="https://discord.gg/aEXGq5cS"><img src="https://img.shields.io/badge/discord-join-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://discord.gg/97jTJEUz4"><img src="https://img.shields.io/badge/discord-join-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
 <p align="center">
@@ -82,10 +82,10 @@ Linux (x86_64, aarch64), macOS (Intel, Apple Silicon) और Windows (x86_64) �
 | **Credential स्टोरेज** | AES-256-GCM vault | plaintext config file | plaintext config file |
 | **डिफ़ॉल्ट Auth** | चालू (WebSocket pairing) | बंद | बंद |
 | **Scheduling** | Cron, interval, one-shot | हाँ | नहीं |
-| **Multi-agent routing** | planned (#108) | हाँ (agentId) | नहीं |
-| **Session orchestration** | planned (#108) | हाँ | नहीं |
-| **MCP support** | Stdio | Stdio + HTTP | Stdio |
-| **Channels** | 7 | 6+ | 4 |
+| **Multi-agent routing** | हाँ (named agents) | हाँ (agentId) | नहीं |
+| **Session orchestration** | हाँ | हाँ | नहीं |
+| **MCP support** | Stdio + HTTP | Stdio + HTTP | Stdio |
+| **Channels** | 8 | 6+ | 4 |
 | **LLM providers** | 15 | 10+ | 22+ |
 | **Pre-compiled binary** | हाँ | N/A (Node.js) | Source से Build |
 | **Config hot-reload** | हाँ | नहीं | नहीं |
@@ -101,7 +101,9 @@ OpenCrust को हमेशा चलने वाले AI agents के ल�
 - **Encrypted credential vault** — API key और token AES-256-GCM के साथ `~/.opencrust/credentials/vault.json` पर संग्रहीत, disk पर कोई plaintext नहीं
 - **डिफ़ॉल्ट Authentication** — WebSocket gateway को pairing code की आवश्यकता है, बिना authentication के कोई access नहीं
 - **User allowlist** — per-channel allowlist नियंत्रित करता है कि agent से कौन interact कर सकता है, अनधिकृत संदेश चुपचाप छोड़ दिए जाते हैं
+- **Per-channel authorization policies** — प्रत्येक channel के लिए DM policy (open, pairing, allowlist) और group policy (open, mention-only, disabled)। अनधिकृत संदेश चुपचाप छोड़ दिए जाते हैं।
 - **Prompt injection detection** — LLM तक पहुंचने से पहले input को validate और sanitize किया जाता है
+- **Log secret redaction** — API key और token log output से automatically redact होते हैं
 - **WASM sandboxing** — WebAssembly runtime के माध्यम से optional plugin sandboxing (`--features plugins` के साथ compile करें)
 - **Localhost-only binding** — gateway डिफ़ॉल्ट रूप से `0.0.0.0` नहीं बल्कि `127.0.0.1` से bind होता है
 
@@ -142,7 +144,9 @@ OpenCrust को हमेशा चलने वाले AI agents के ल�
 
 ### MCP (Model Context Protocol)
 - किसी भी MCP server से connect करें (filesystem, GitHub, databases, web search)
+- stdio और HTTP transport दोनों को support करता है
 - Tools native agent tools के रूप में namespace के साथ दिखाई देते हैं (`server.tool`)
+- Resource tool और server instructions को support करता है
 - `config.yml` या `~/.opencrust/mcp.json` में configure करें (Claude Desktop compatible)
 - CLI: `opencrust mcp list`, `opencrust mcp inspect <name>`
 
@@ -264,12 +268,14 @@ crates/
 | iMessage (macOS, group chats) | उपलब्ध |
 | LLM providers (15: Anthropic, OpenAI, Ollama + 12 OpenAI-compatible) | उपलब्ध |
 | Agent tools (bash, file_read, file_write, web_fetch, web_search, doc_search, schedule_heartbeat, cancel_heartbeat, list_heartbeats, mcp_resources) | उपलब्ध |
-| MCP client (stdio, tool bridging) | उपलब्ध |
+| MCP client (stdio, HTTP, tool bridging, resources, instructions) | उपलब्ध |
+| A2A protocol (Agent-to-Agent) | उपलब्ध |
+| Multi-agent routing (named agents) | उपलब्ध |
 | Skills (SKILL.md, auto-discovery) | उपलब्ध |
 | Config (YAML/TOML, hot-reload) | उपलब्ध |
 | Personality (DNA bootstrap, hot-reload) | उपलब्ध |
 | Memory (SQLite, vector search, summarization) | उपलब्ध |
-| Security (vault, allowlist, pairing) | उपलब्ध |
+| Security (vault, allowlist, pairing, per-channel policies, log redaction) | उपलब्ध |
 | Scheduling (cron, interval, one-shot) | उपलब्ध |
 | CLI (init, start/stop/restart, update, migrate, mcp, skills, doctor) | उपलब्ध |
 | Plugin system (WASM sandbox) | Scaffolded |
@@ -277,21 +283,20 @@ crates/
 
 ## योगदान
 
-OpenCrust MIT license के तहत open source है। contributors के साथ बात करने, सवाल पूछने या जो आप बना रहे हैं उसे share करने के लिए [Discord](https://discord.gg/aEXGq5cS) join करें। setup instructions, coding guidelines और crate overview के लिए [CONTRIBUTING.md](../CONTRIBUTING.md) देखें।
+OpenCrust MIT license के तहत open source है। contributors के साथ बात करने, सवाल पूछने या जो आप बना रहे हैं उसे share करने के लिए [Discord](https://discord.gg/97jTJEUz4) join करें। setup instructions, coding guidelines और crate overview के लिए [CONTRIBUTING.md](../CONTRIBUTING.md) देखें।
 
 ### वर्तमान प्राथमिकताएं
 
 | प्राथमिकता | Issue | विवरण |
 |-----------|-------|--------|
-| **P0** | [#103](https://github.com/opencrust-org/opencrust/issues/103) | README और positioning |
-| **P0** | [#104](https://github.com/opencrust-org/opencrust/issues/104) | Website: opencrust.org |
-| **P0** | [#105](https://github.com/opencrust-org/opencrust/issues/105) | Discord community |
-| **P1** | [#106](https://github.com/opencrust-org/opencrust/issues/106) | Built-in starter skills |
-| **P1** | [#107](https://github.com/opencrust-org/opencrust/issues/107) | Scheduling hardening |
-| **P1** | [#108](https://github.com/opencrust-org/opencrust/issues/108) | Multi-agent routing |
-| **P1** | [#109](https://github.com/opencrust-org/opencrust/issues/109) | Install script |
-| **P1** | [#110](https://github.com/opencrust-org/opencrust/issues/110) | Linux aarch64 + Windows releases |
-| **P1** | [#80](https://github.com/opencrust-org/opencrust/issues/80) | MCP: HTTP transport, resources, prompts |
+| **P0** | [#99](https://github.com/opencrust-org/opencrust/issues/99) | Brand facelift: logo, images, visual identity |
+| **P1** | [#150](https://github.com/opencrust-org/opencrust/issues/150) | Fallback model chain: auto-retry with backup providers |
+| **P1** | [#152](https://github.com/opencrust-org/opencrust/issues/152) | Token usage tracking and cost reporting |
+| **P1** | [#153](https://github.com/opencrust-org/opencrust/issues/153) | `opencrust doctor` diagnostic command |
+| **P1** | [#146](https://github.com/opencrust-org/opencrust/issues/146) | Guardrails: safety, rate limits, and cost controls |
+| **P2** | [#185](https://github.com/opencrust-org/opencrust/issues/185) | MCP: Apps support (interactive HTML interfaces) |
+| **P2** | [#158](https://github.com/opencrust-org/opencrust/issues/158) | Auto-backup config files before changes |
+| **P2** | [#142](https://github.com/opencrust-org/opencrust/issues/142) | Web-based setup wizard at /setup |
 
 शुरुआत के लिए [सभी issues](https://github.com/opencrust-org/opencrust/issues) देखें या [`good-first-issue`](https://github.com/opencrust-org/opencrust/issues?q=label%3Agood-first-issue+is%3Aopen) से filter करें।
 

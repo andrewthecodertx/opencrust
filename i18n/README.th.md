@@ -14,7 +14,7 @@
   <a href="https://github.com/opencrust-org/opencrust/stargazers"><img src="https://img.shields.io/github/stars/opencrust-org/opencrust?style=flat" alt="Stars"></a>
   <a href="https://github.com/opencrust-org/opencrust/issues"><img src="https://img.shields.io/github/issues/opencrust-org/opencrust" alt="Issues"></a>
   <a href="https://github.com/opencrust-org/opencrust/issues?q=label%3Agood-first-issue+is%3Aopen"><img src="https://img.shields.io/github/issues/opencrust-org/opencrust/good-first-issue?color=7057ff&label=good%20first%20issues" alt="Good First Issues"></a>
-  <a href="https://discord.gg/aEXGq5cS"><img src="https://img.shields.io/badge/discord-join-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://discord.gg/97jTJEUz4"><img src="https://img.shields.io/badge/discord-join-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
 <p align="center">
@@ -82,10 +82,10 @@ binary สำหรับ Linux (x86_64, aarch64), macOS (Intel, Apple Silicon) 
 | **เก็บ credential** | vault เข้ารหัส AES-256-GCM | plaintext config file | plaintext config file |
 | **Auth ค่าเริ่มต้น** | เปิดใช้ (WebSocket pairing) | ปิดใช้ | ปิดใช้ |
 | **Scheduling** | Cron, interval, one-shot | ใช่ | ไม่ |
-| **Multi-agent routing** | วางแผนไว้ (#108) | ใช่ (agentId) | ไม่ |
-| **Session orchestration** | วางแผนไว้ (#108) | ใช่ | ไม่ |
-| **MCP support** | Stdio | Stdio + HTTP | Stdio |
-| **ช่องทาง** | 7 | 6+ | 4 |
+| **Multi-agent routing** | ใช่ (named agents) | ใช่ (agentId) | ไม่ |
+| **Session orchestration** | ใช่ | ใช่ | ไม่ |
+| **MCP support** | Stdio + HTTP | Stdio + HTTP | Stdio |
+| **ช่องทาง** | 8 | 6+ | 4 |
 | **LLM provider** | 15 | 10+ | 22+ |
 | **Pre-compiled binary** | ใช่ | N/A (Node.js) | Build จาก source |
 | **Config hot-reload** | ใช่ | ไม่ | ไม่ |
@@ -101,7 +101,9 @@ OpenCrust ถูกออกแบบสำหรับ AI agent ที่ทำ
 - **Encrypted credential vault** - API key และ token จัดเก็บด้วย AES-256-GCM ที่ `~/.opencrust/credentials/vault.json` ไม่มี plaintext บนดิสก์
 - **Authentication ค่าเริ่มต้น** - WebSocket gateway ต้องใช้ pairing code ไม่มีการเข้าถึงโดยไม่ผ่านการยืนยันตัวตน
 - **User allowlist** - allowlist แยกตามช่องทางควบคุมว่าใครสามารถโต้ตอบกับ agent ได้ ข้อความที่ไม่ได้รับอนุญาตจะถูกละทิ้งโดยไม่แจ้ง
+- **Per-channel authorization policies** - DM policy (open, pairing, allowlist) และ group policy (open, mention-only, disabled) แยกตามช่องทาง ข้อความที่ไม่ได้รับอนุญาตจะถูกละทิ้งโดยไม่แจ้ง
 - **ตรวจจับ prompt injection** - ตรวจสอบและ sanitize input ก่อนส่งถึง LLM
+- **Log secret redaction** - API key และ token ถูก redact จาก log output อัตโนมัติ
 - **WASM sandboxing** - sandbox plugin แบบ optional ผ่าน WebAssembly runtime (compile ด้วย `--features plugins`)
 - **Bind เฉพาะ localhost** - gateway bind กับ `127.0.0.1` ค่าเริ่มต้น ไม่ใช่ `0.0.0.0`
 
@@ -142,7 +144,9 @@ OpenCrust ถูกออกแบบสำหรับ AI agent ที่ทำ
 
 ### MCP (Model Context Protocol)
 - เชื่อมต่อ MCP server ใดก็ได้ (filesystem, GitHub, databases, web search)
+- รองรับทั้ง stdio และ HTTP transport
 - tool ปรากฏเป็น native agent tool พร้อม namespace (`server.tool`)
+- รองรับ resource tool และ server instructions
 - ตั้งค่าใน `config.yml` หรือ `~/.opencrust/mcp.json` (รองรับ Claude Desktop)
 - CLI: `opencrust mcp list`, `opencrust mcp inspect <name>`
 
@@ -264,12 +268,14 @@ crates/
 | iMessage (macOS, group chats) | ใช้งานได้ |
 | LLM providers (15: Anthropic, OpenAI, Ollama + 12 OpenAI-compatible) | ใช้งานได้ |
 | Agent tools (bash, file_read, file_write, web_fetch, web_search, doc_search, schedule_heartbeat, cancel_heartbeat, list_heartbeats, mcp_resources) | ใช้งานได้ |
-| MCP client (stdio, tool bridging) | ใช้งานได้ |
+| MCP client (stdio, HTTP, tool bridging, resources, instructions) | ใช้งานได้ |
+| A2A protocol (Agent-to-Agent) | ใช้งานได้ |
+| Multi-agent routing (named agents) | ใช้งานได้ |
 | Skills (SKILL.md, auto-discovery) | ใช้งานได้ |
 | Config (YAML/TOML, hot-reload) | ใช้งานได้ |
 | Personality (DNA bootstrap, hot-reload) | ใช้งานได้ |
 | Memory (SQLite, vector search, summarization) | ใช้งานได้ |
-| Security (vault, allowlist, pairing) | ใช้งานได้ |
+| Security (vault, allowlist, pairing, per-channel policies, log redaction) | ใช้งานได้ |
 | Scheduling (cron, interval, one-shot) | ใช้งานได้ |
 | CLI (init, start/stop/restart, update, migrate, mcp, skills, doctor) | ใช้งานได้ |
 | Plugin system (WASM sandbox) | Scaffolded |
@@ -277,21 +283,20 @@ crates/
 
 ## การมีส่วนร่วม
 
-OpenCrust เป็น open source ภายใต้ MIT license เข้าร่วม [Discord](https://discord.gg/aEXGq5cS) เพื่อพูดคุยกับผู้ร่วมพัฒนา ถามคำถาม หรือแชร์สิ่งที่คุณกำลังสร้าง ดู [CONTRIBUTING.md](../CONTRIBUTING.md) สำหรับคำแนะนำการตั้งค่า แนวทางการเขียนโค้ด และ crate overview
+OpenCrust เป็น open source ภายใต้ MIT license เข้าร่วม [Discord](https://discord.gg/97jTJEUz4) เพื่อพูดคุยกับผู้ร่วมพัฒนา ถามคำถาม หรือแชร์สิ่งที่คุณกำลังสร้าง ดู [CONTRIBUTING.md](../CONTRIBUTING.md) สำหรับคำแนะนำการตั้งค่า แนวทางการเขียนโค้ด และ crate overview
 
 ### ลำดับความสำคัญปัจจุบัน
 
 | ลำดับ | Issue | คำอธิบาย |
 |-------|-------|-----------|
-| **P0** | [#103](https://github.com/opencrust-org/opencrust/issues/103) | README และ positioning |
-| **P0** | [#104](https://github.com/opencrust-org/opencrust/issues/104) | Website: opencrust.org |
-| **P0** | [#105](https://github.com/opencrust-org/opencrust/issues/105) | Discord community |
-| **P1** | [#106](https://github.com/opencrust-org/opencrust/issues/106) | Built-in starter skills |
-| **P1** | [#107](https://github.com/opencrust-org/opencrust/issues/107) | Scheduling hardening |
-| **P1** | [#108](https://github.com/opencrust-org/opencrust/issues/108) | Multi-agent routing |
-| **P1** | [#109](https://github.com/opencrust-org/opencrust/issues/109) | Install script |
-| **P1** | [#110](https://github.com/opencrust-org/opencrust/issues/110) | Linux aarch64 + Windows releases |
-| **P1** | [#80](https://github.com/opencrust-org/opencrust/issues/80) | MCP: HTTP transport, resources, prompts |
+| **P0** | [#99](https://github.com/opencrust-org/opencrust/issues/99) | Brand facelift: logo, images, visual identity |
+| **P1** | [#150](https://github.com/opencrust-org/opencrust/issues/150) | Fallback model chain: auto-retry with backup providers |
+| **P1** | [#152](https://github.com/opencrust-org/opencrust/issues/152) | Token usage tracking and cost reporting |
+| **P1** | [#153](https://github.com/opencrust-org/opencrust/issues/153) | `opencrust doctor` diagnostic command |
+| **P1** | [#146](https://github.com/opencrust-org/opencrust/issues/146) | Guardrails: safety, rate limits, and cost controls |
+| **P2** | [#185](https://github.com/opencrust-org/opencrust/issues/185) | MCP: Apps support (interactive HTML interfaces) |
+| **P2** | [#158](https://github.com/opencrust-org/opencrust/issues/158) | Auto-backup config files before changes |
+| **P2** | [#142](https://github.com/opencrust-org/opencrust/issues/142) | Web-based setup wizard at /setup |
 
 ดู [issues ทั้งหมด](https://github.com/opencrust-org/opencrust/issues) หรือกรองด้วย [`good-first-issue`](https://github.com/opencrust-org/opencrust/issues?q=label%3Agood-first-issue+is%3Aopen) เพื่อหาจุดเริ่มต้น
 

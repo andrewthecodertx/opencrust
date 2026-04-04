@@ -57,6 +57,7 @@ anyhow = "1"
 
 # Crypto / Security
 ring = "0.17"
+subtle = "2"
 base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
 rand = "0.9"

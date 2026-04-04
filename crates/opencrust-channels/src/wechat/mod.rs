@@ -5,10 +5,11 @@ pub mod webhook;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use reqwest::Client;
-use tokio::sync::mpsc;
+use tokio::sync::{RwLock, mpsc};
 use tracing::info;
 
 use crate::traits::{ChannelLifecycle, ChannelSender, ChannelStatus};
@@ -35,6 +36,13 @@ pub type WeChatOnMessageFn = Arc<
         + Sync,
 >;
 
+/// WeChat access tokens are valid for 7200 seconds (2 hours).
+/// Refresh slightly early to avoid expiry during a request.
+const TOKEN_TTL: Duration = Duration::from_secs(7000);
+
+/// Cached access token with the instant it was fetched.
+type TokenCache = Arc<RwLock<Option<(String, Instant)>>>;
+
 pub struct WeChatChannel {
     client: Client,
     pub(crate) appid: String,
@@ -46,6 +54,7 @@ pub struct WeChatChannel {
     status: ChannelStatus,
     on_message: WeChatOnMessageFn,
     group_filter: WeChatGroupFilter,
+    token_cache: TokenCache,
 }
 
 impl WeChatChannel {
@@ -75,6 +84,7 @@ impl WeChatChannel {
             status: ChannelStatus::Disconnected,
             on_message,
             group_filter,
+            token_cache: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -129,6 +139,7 @@ pub struct WeChatSender {
     appid: String,
     secret: String,
     api_base_url: String,
+    token_cache: TokenCache,
 }
 
 #[async_trait]
@@ -143,6 +154,7 @@ impl ChannelSender for WeChatSender {
             &self.appid,
             &self.secret,
             &self.api_base_url,
+            &self.token_cache,
             message,
         )
         .await
@@ -161,6 +173,7 @@ impl ChannelLifecycle for WeChatChannel {
             appid: self.appid.clone(),
             secret: self.secret.clone(),
             api_base_url: self.api_base_url.clone(),
+            token_cache: Arc::clone(&self.token_cache),
         })
     }
 
@@ -195,16 +208,44 @@ impl ChannelSender for WeChatChannel {
             &self.appid,
             &self.secret,
             &self.api_base_url,
+            &self.token_cache,
             message,
         )
         .await
     }
 }
 
+/// Return a valid access token, using the cache when possible.
+///
+/// WeChat tokens are valid for 7200 s. We refresh after TOKEN_TTL (7000 s) to
+/// avoid expiry mid-request. The `RwLock` allows concurrent reads while a
+/// single writer refreshes the token.
+async fn get_token_cached(
+    client: &Client,
+    appid: &str,
+    secret: &str,
+    api_base_url: &str,
+    cache: &TokenCache,
+) -> opencrust_common::Result<String> {
+    {
+        let guard = cache.read().await;
+        if let Some((token, fetched_at)) = guard.as_ref()
+            && fetched_at.elapsed() < TOKEN_TTL
+        {
+            return Ok(token.clone());
+        }
+    }
+    let token = api::get_access_token(client, appid, secret, api_base_url)
+        .await
+        .map_err(|e| opencrust_common::Error::Channel(format!("wechat token fetch failed: {e}")))?;
+    *cache.write().await = Some((token.clone(), Instant::now()));
+    Ok(token)
+}
+
 /// Push a message via WeChat Customer Service API.
 ///
-/// Fetches a fresh access token then delivers the message to the subscriber
-/// identified by `wechat_openid` in `message.metadata`.
+/// Uses a cached access token (refreshed after TOKEN_TTL) to avoid hitting
+/// WeChat's 2000 token-requests/day rate limit.
 ///
 /// For media messages (`Image`, `Audio`, `Video`) the metadata must contain a
 /// `wechat_media_id` (pre-uploaded via the WeChat Media API). Video also
@@ -214,6 +255,7 @@ async fn wechat_push_message(
     appid: &str,
     secret: &str,
     api_base_url: &str,
+    token_cache: &TokenCache,
     message: &Message,
 ) -> Result<()> {
     let openid = message
@@ -224,9 +266,7 @@ async fn wechat_push_message(
             opencrust_common::Error::Channel("missing wechat_openid in metadata".into())
         })?;
 
-    let access_token = api::get_access_token(client, appid, secret, api_base_url)
-        .await
-        .map_err(|e| opencrust_common::Error::Channel(format!("wechat token fetch failed: {e}")))?;
+    let access_token = get_token_cached(client, appid, secret, api_base_url, token_cache).await?;
 
     match &message.content {
         MessageContent::Text(t) => {

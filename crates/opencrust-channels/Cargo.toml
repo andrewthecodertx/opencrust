@@ -25,6 +25,7 @@ axum = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true }
 dirs = { version = "6", optional = true }
 ring = { workspace = true, optional = true }
+subtle = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -42,5 +43,5 @@ whatsapp = ["dep:axum"]
 whatsapp-web = ["dep:dirs"]
 imessage = ["dep:rusqlite", "dep:dirs"]
 line = ["dep:axum", "dep:ring", "dep:base64"]
-wechat = ["dep:axum", "dep:ring"]
+wechat = ["dep:axum", "dep:ring", "dep:subtle"]
 

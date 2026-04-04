@@ -920,6 +920,14 @@ pub fn build_discord_channels(
                         )
                         .await;
 
+                    if let Some((input, output, provider, model)) =
+                        state.agents.take_session_usage(&session_id)
+                    {
+                        state
+                            .persist_usage(&session_id, &provider, &model, input, output)
+                            .await;
+                    }
+
                     Ok(response)
                 })
             },
@@ -1176,6 +1184,13 @@ pub fn build_telegram_channels(
                                     Some(serde_json::json!({"telegram_chat_id": chat_id})),
                                 )
                                 .await;
+                            if let Some((input, output, provider, model)) =
+                                state.agents.take_session_usage(&session_id)
+                            {
+                                state
+                                    .persist_usage(&session_id, &provider, &model, input, output)
+                                    .await;
+                            }
                             Ok(response)
                         }
                         Some(MediaAttachment::Photo { data, caption }) => {
@@ -1247,6 +1262,13 @@ pub fn build_telegram_channels(
                                     Some(serde_json::json!({"telegram_chat_id": chat_id})),
                                 )
                                 .await;
+                            if let Some((input, output, provider, model)) =
+                                state.agents.take_session_usage(&session_id)
+                            {
+                                state
+                                    .persist_usage(&session_id, &provider, &model, input, output)
+                                    .await;
+                            }
                             Ok(response)
                         }
                         Some(MediaAttachment::Document {
@@ -1340,6 +1362,13 @@ pub fn build_telegram_channels(
                                     Some(serde_json::json!({"telegram_chat_id": chat_id})),
                                 )
                                 .await;
+                            if let Some((input, output, provider, model)) =
+                                state.agents.take_session_usage(&session_id)
+                            {
+                                state
+                                    .persist_usage(&session_id, &provider, &model, input, output)
+                                    .await;
+                            }
                             Ok(response)
                         }
                         None => {
@@ -1403,6 +1432,13 @@ pub fn build_telegram_channels(
                                     Some(serde_json::json!({"telegram_chat_id": chat_id})),
                                 )
                                 .await;
+                            if let Some((input, output, provider, model)) =
+                                state.agents.take_session_usage(&session_id)
+                            {
+                                state
+                                    .persist_usage(&session_id, &provider, &model, input, output)
+                                    .await;
+                            }
                             Ok(response)
                         }
                     }
@@ -1794,6 +1830,14 @@ pub fn build_slack_channels(
                         )
                         .await;
 
+                    if let Some((input, output, provider, model)) =
+                        state.agents.take_session_usage(&session_id)
+                    {
+                        state
+                            .persist_usage(&session_id, &provider, &model, input, output)
+                            .await;
+                    }
+
                     Ok(response)
                 })
             },
@@ -1984,6 +2028,14 @@ pub fn build_whatsapp_channels(
                         )
                         .await;
 
+                    if let Some((input, output, provider, model)) =
+                        state.agents.take_session_usage(&session_id)
+                    {
+                        state
+                            .persist_usage(&session_id, &provider, &model, input, output)
+                            .await;
+                    }
+
                     Ok(response)
                 })
             },
@@ -2159,6 +2211,14 @@ pub fn build_whatsapp_web_channels(
                         )
                         .await;
 
+                    if let Some((input, output, provider, model)) =
+                        state.agents.take_session_usage(&session_id)
+                    {
+                        state
+                            .persist_usage(&session_id, &provider, &model, input, output)
+                            .await;
+                    }
+
                     Ok(response)
                 })
             },
@@ -2294,6 +2354,14 @@ pub fn build_imessage_channels(
                             Some(serde_json::json!({"imessage_sender": sender_id})),
                         )
                         .await;
+
+                    if let Some((input, output, provider, model)) =
+                        state.agents.take_session_usage(&session_id)
+                    {
+                        state
+                            .persist_usage(&session_id, &provider, &model, input, output)
+                            .await;
+                    }
 
                     Ok(response)
                 })
@@ -2471,6 +2539,14 @@ pub fn build_line_channels(
                         )
                         .await;
 
+                    if let Some((input, output, provider, model)) =
+                        state.agents.take_session_usage(&session_id)
+                    {
+                        state
+                            .persist_usage(&session_id, &provider, &model, input, output)
+                            .await;
+                    }
+
                     Ok(response)
                 })
             },
@@ -2642,6 +2718,14 @@ pub fn build_wechat_channels(
                             Some(serde_json::json!({"wechat_openid": user_id})),
                         )
                         .await;
+
+                    if let Some((input, output, provider, model)) =
+                        state.agents.take_session_usage(&session_id)
+                    {
+                        state
+                            .persist_usage(&session_id, &provider, &model, input, output)
+                            .await;
+                    }
 
                     Ok(response)
                 })

@@ -6,6 +6,7 @@ use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use ring::digest;
 use serde::Deserialize;
+use subtle::ConstantTimeEq;
 use tracing::{info, warn};
 
 use super::WeChatChannel;
@@ -40,15 +41,7 @@ fn verify_signature(token: &str, timestamp: &str, nonce: &str, signature: &str) 
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
 
-    // Constant-time comparison via zip to avoid timing side-channels.
-    if computed.len() != signature.len() {
-        return false;
-    }
-    computed
-        .bytes()
-        .zip(signature.bytes())
-        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-        == 0
+    computed.as_bytes().ct_eq(signature.as_bytes()).into()
 }
 
 /// GET /wechat/webhook — server ownership verification requested by WeChat.

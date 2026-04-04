@@ -1343,14 +1343,16 @@ async fn setup_wechat(
         return Ok(None);
     }
 
-    let group_policy_choices = &["open (respond to all messages)", "disabled"];
-    let group_idx = Select::new()
-        .with_prompt("Message policy")
-        .items(group_policy_choices)
+    // WeChat Official Accounts are always 1:1 (is_group is always false),
+    // so dm_policy is the relevant setting here.
+    let dm_policy_choices = &["open (respond to all messages)", "disabled"];
+    let dm_idx = Select::new()
+        .with_prompt("DM policy")
+        .items(dm_policy_choices)
         .default(0)
         .interact()
         .context("selection cancelled")?;
-    let group_policy = match group_idx {
+    let dm_policy = match dm_idx {
         1 => "disabled",
         _ => "open",
     };
@@ -1359,7 +1361,7 @@ async fn setup_wechat(
     settings.insert("appid".to_string(), serde_json::json!(appid));
     settings.insert("secret".to_string(), serde_json::json!(secret));
     settings.insert("token".to_string(), serde_json::json!(token));
-    settings.insert("group_policy".to_string(), serde_json::json!(group_policy));
+    settings.insert("dm_policy".to_string(), serde_json::json!(dm_policy));
 
     Ok(Some(ChannelConfig {
         channel_type: "wechat".to_string(),
