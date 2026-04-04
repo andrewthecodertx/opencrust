@@ -4,6 +4,8 @@ use rusqlite::params;
 use std::path::Path;
 use tracing::{info, warn};
 
+use crate::migrations::USAGE_SCHEMA_V1;
+
 /// Persisted message row loaded from the session store.
 #[derive(Debug, Clone)]
 pub struct StoredMessage {
@@ -11,6 +13,14 @@ pub struct StoredMessage {
     pub content: String,
     pub timestamp: chrono::DateTime<chrono::Utc>,
     pub metadata: serde_json::Value,
+}
+
+/// Aggregated token usage statistics.
+#[derive(Debug, Clone, Default)]
+pub struct UsageRecord {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
 }
 
 /// Persistent storage for conversation sessions and message history.
@@ -80,6 +90,11 @@ impl SessionStore {
                     ON scheduled_tasks(execute_at) WHERE status = 'pending';",
             )
             .map_err(|e| Error::Database(format!("migration failed: {e}")))?;
+
+        // Apply versioned migrations (idempotent: CREATE TABLE IF NOT EXISTS)
+        self.conn
+            .execute_batch(USAGE_SCHEMA_V1.sql)
+            .map_err(|e| Error::Database(format!("usage migration failed: {e}")))?;
 
         // Idempotent column additions for scheduling overhaul
         let columns = [
@@ -524,6 +539,81 @@ impl SessionStore {
             )
             .map_err(|e| Error::Database(format!("failed to schedule task: {e}")))?;
         Ok(task_id)
+    }
+
+    /// Record token usage for a completed agent turn.
+    pub fn record_usage(
+        &self,
+        session_id: &str,
+        provider: &str,
+        model: &str,
+        input_tokens: u32,
+        output_tokens: u32,
+    ) -> Result<()> {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.conn
+            .execute(
+                "INSERT INTO usage_log (id, session_id, provider, model, input_tokens, output_tokens)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![id, session_id, provider, model, input_tokens, output_tokens],
+            )
+            .map_err(|e| Error::Database(format!("failed to record usage: {e}")))?;
+        Ok(())
+    }
+
+    /// Query aggregated token usage.
+    ///
+    /// - `session_id`: when `Some`, restrict to that session; otherwise aggregate all sessions.
+    /// - `period`: one of `"today"`, `"week"`, `"month"`, or `None` (all time).
+    pub fn query_usage(
+        &self,
+        session_id: Option<&str>,
+        period: Option<&str>,
+    ) -> Result<UsageRecord> {
+        let date_filter = match period {
+            Some("today") => " AND date(recorded_at) = date('now')",
+            Some("week") => " AND recorded_at >= datetime('now', '-7 days')",
+            Some("month") => " AND recorded_at >= datetime('now', '-30 days')",
+            _ => "",
+        };
+
+        let (sql, params_vec): (String, Vec<String>) = if let Some(sid) = session_id {
+            (
+                format!(
+                    "SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), \
+                     COALESCE(SUM(input_tokens+output_tokens),0) \
+                     FROM usage_log WHERE session_id = ?1{date_filter}"
+                ),
+                vec![sid.to_string()],
+            )
+        } else {
+            (
+                format!(
+                    "SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), \
+                     COALESCE(SUM(input_tokens+output_tokens),0) \
+                     FROM usage_log WHERE 1=1{date_filter}"
+                ),
+                vec![],
+            )
+        };
+
+        let row: (i64, i64, i64) = if params_vec.is_empty() {
+            self.conn
+                .query_row(&sql, [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .map_err(|e| Error::Database(format!("failed to query usage: {e}")))?
+        } else {
+            self.conn
+                .query_row(&sql, params![params_vec[0]], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })
+                .map_err(|e| Error::Database(format!("failed to query usage: {e}")))?
+        };
+
+        Ok(UsageRecord {
+            input_tokens: row.0 as u64,
+            output_tokens: row.1 as u64,
+            total_tokens: row.2 as u64,
+        })
     }
 
     /// After completing a recurring task, schedule the next occurrence.
@@ -1149,5 +1239,43 @@ mod tests {
             })
             .unwrap();
         assert_eq!(session_count, 1);
+    }
+
+    #[test]
+    fn record_and_query_usage_all_time() {
+        let store = SessionStore::in_memory().expect("in-memory store");
+        store
+            .record_usage("s1", "anthropic", "claude-sonnet", 100, 50)
+            .expect("record_usage should succeed");
+        store
+            .record_usage("s1", "anthropic", "claude-sonnet", 200, 80)
+            .expect("record_usage should succeed");
+        store
+            .record_usage("s2", "openai", "gpt-4o", 300, 100)
+            .expect("record_usage should succeed");
+
+        // Query all sessions
+        let all = store.query_usage(None, None).expect("query_usage");
+        assert_eq!(all.input_tokens, 600);
+        assert_eq!(all.output_tokens, 230);
+        assert_eq!(all.total_tokens, 830);
+
+        // Query per session
+        let s1 = store.query_usage(Some("s1"), None).expect("query_usage s1");
+        assert_eq!(s1.input_tokens, 300);
+        assert_eq!(s1.output_tokens, 130);
+
+        let s2 = store.query_usage(Some("s2"), None).expect("query_usage s2");
+        assert_eq!(s2.input_tokens, 300);
+        assert_eq!(s2.output_tokens, 100);
+    }
+
+    #[test]
+    fn query_usage_empty_returns_zeros() {
+        let store = SessionStore::in_memory().expect("in-memory store");
+        let result = store.query_usage(None, None).expect("query_usage");
+        assert_eq!(result.input_tokens, 0);
+        assert_eq!(result.output_tokens, 0);
+        assert_eq!(result.total_tokens, 0);
     }
 }

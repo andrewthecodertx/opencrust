@@ -239,6 +239,33 @@
               </div>
             </div>
 
+            <hr class="divider">
+
+            <div class="status-group">
+              <h3>Token Usage</h3>
+              <div class="status-row">
+                <span>Input tokens</span>
+                <span id="usage-input">—</span>
+              </div>
+              <div class="status-row">
+                <span>Output tokens</span>
+                <span id="usage-output">—</span>
+              </div>
+              <div class="status-row">
+                <span>Total tokens</span>
+                <span id="usage-total">—</span>
+              </div>
+              <div class="status-row">
+                <span>Period</span>
+                <select id="usage-period" class="provider-select" style="width:auto;font-size:0.8rem;padding:2px 4px;">
+                  <option value="">All time</option>
+                  <option value="today">Today</option>
+                  <option value="week">Last 7 days</option>
+                  <option value="month">Last 30 days</option>
+                </select>
+              </div>
+            </div>
+
             <div id="auth-section" class="gateway-key-section" style="display:none">
               <hr class="divider">
               <label for="key-gateway">Gateway API Key</label>

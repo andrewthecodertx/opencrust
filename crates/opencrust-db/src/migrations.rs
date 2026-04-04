@@ -70,3 +70,24 @@ pub const DOCUMENT_SCHEMA_V1: Migration = Migration {
     name: "document_schema_v1",
     sql: DOCUMENT_SCHEMA_V1_SQL,
 };
+
+pub const USAGE_SCHEMA_V1_SQL: &str = "
+CREATE TABLE IF NOT EXISTS usage_log (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_usage_session ON usage_log(session_id, recorded_at);
+CREATE INDEX IF NOT EXISTS idx_usage_recorded_at ON usage_log(recorded_at);
+";
+
+pub const USAGE_SCHEMA_V1: Migration = Migration {
+    version: 3,
+    name: "usage_schema_v1",
+    sql: USAGE_SCHEMA_V1_SQL,
+};

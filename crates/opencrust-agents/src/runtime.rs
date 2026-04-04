@@ -1,4 +1,5 @@
-use std::sync::{Arc, RwLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, RwLock};
 
 use futures::StreamExt;
 use futures::future::join_all;
@@ -30,6 +31,9 @@ pub struct AgentRuntime {
     max_context_tokens: Option<usize>,
     recall_limit: usize,
     summarization_enabled: bool,
+    /// Accumulated token usage per session, keyed by session_id.
+    /// Tuple: (input_tokens, output_tokens, provider_id, model).
+    usage_accumulator: Mutex<HashMap<String, (u32, u32, String, String)>>,
 }
 
 impl AgentRuntime {
@@ -46,6 +50,7 @@ impl AgentRuntime {
             max_context_tokens: None,
             recall_limit: 10,
             summarization_enabled: true,
+            usage_accumulator: Mutex::new(HashMap::new()),
         }
     }
 
@@ -95,6 +100,29 @@ impl AgentRuntime {
 
     pub fn set_summarization_enabled(&mut self, enabled: bool) {
         self.summarization_enabled = enabled;
+    }
+
+    /// Accumulate usage for a session turn. Tokens are summed across multiple
+    /// tool-loop iterations within a single message.
+    fn accumulate_usage(
+        &self,
+        session_id: &str,
+        provider_id: &str,
+        model: &str,
+        input_tokens: u32,
+        output_tokens: u32,
+    ) {
+        let mut acc = self.usage_accumulator.lock().unwrap();
+        let entry = acc
+            .entry(session_id.to_string())
+            .or_insert_with(|| (0, 0, provider_id.to_string(), model.to_string()));
+        entry.0 += input_tokens;
+        entry.1 += output_tokens;
+    }
+
+    /// Drain and return the accumulated usage for a session, if any.
+    pub fn take_session_usage(&self, session_id: &str) -> Option<(u32, u32, String, String)> {
+        self.usage_accumulator.lock().unwrap().remove(session_id)
     }
 
     pub fn register_provider(&self, provider: Arc<dyn LlmProvider>) {
@@ -562,6 +590,16 @@ impl AgentRuntime {
 
             let response = provider.complete(&request).await?;
 
+            if let Some(usage) = &response.usage {
+                self.accumulate_usage(
+                    session_id,
+                    provider.provider_id(),
+                    &response.model,
+                    usage.input_tokens,
+                    usage.output_tokens,
+                );
+            }
+
             let has_tool_use = response
                 .content
                 .iter()
@@ -723,6 +761,16 @@ impl AgentRuntime {
             };
 
             let response = provider.complete(&request).await?;
+
+            if let Some(usage) = &response.usage {
+                self.accumulate_usage(
+                    session_id,
+                    provider.provider_id(),
+                    &response.model,
+                    usage.input_tokens,
+                    usage.output_tokens,
+                );
+            }
 
             let has_tool_use = response
                 .content
@@ -1086,7 +1134,8 @@ impl AgentRuntime {
                                 }
                             }
                             StreamEvent::MessageDelta {
-                                stop_reason: sr, ..
+                                stop_reason: sr,
+                                usage,
                             } => {
                                 // OpenAI/vLLM never sends ContentBlockStop, so flush the
                                 // in-flight tool when the stream signals tool_calls done.
@@ -1094,6 +1143,15 @@ impl AgentRuntime {
                                     tool_uses.push(tool);
                                 }
                                 _stop_reason = sr;
+                                if let Some(u) = usage {
+                                    self.accumulate_usage(
+                                        session_id,
+                                        provider.provider_id(),
+                                        "",
+                                        u.input_tokens,
+                                        u.output_tokens,
+                                    );
+                                }
                             }
                             StreamEvent::MessageStop => break,
                         }
@@ -1185,6 +1243,16 @@ impl AgentRuntime {
                 Err(_) => {
                     // Streaming not supported — fall back to non-streaming
                     let response = provider.complete(&request).await?;
+
+                    if let Some(usage) = &response.usage {
+                        self.accumulate_usage(
+                            session_id,
+                            provider.provider_id(),
+                            &response.model,
+                            usage.input_tokens,
+                            usage.output_tokens,
+                        );
+                    }
 
                     let has_tool_use = response
                         .content
@@ -1345,6 +1413,16 @@ impl AgentRuntime {
             };
 
             let response = provider.complete(&request).await?;
+
+            if let Some(usage) = &response.usage {
+                self.accumulate_usage(
+                    session_id,
+                    provider.provider_id(),
+                    &response.model,
+                    usage.input_tokens,
+                    usage.output_tokens,
+                );
+            }
 
             let has_tool_use = response
                 .content
@@ -1530,7 +1608,8 @@ impl AgentRuntime {
                                 }
                             }
                             StreamEvent::MessageDelta {
-                                stop_reason: sr, ..
+                                stop_reason: sr,
+                                usage,
                             } => {
                                 // OpenAI/vLLM never sends ContentBlockStop, so flush the
                                 // in-flight tool when the stream signals tool_calls done.
@@ -1538,6 +1617,15 @@ impl AgentRuntime {
                                     tool_uses.push(tool);
                                 }
                                 _stop_reason = sr;
+                                if let Some(u) = usage {
+                                    self.accumulate_usage(
+                                        session_id,
+                                        provider.provider_id(),
+                                        "",
+                                        u.input_tokens,
+                                        u.output_tokens,
+                                    );
+                                }
                             }
                             StreamEvent::MessageStop => break,
                         }

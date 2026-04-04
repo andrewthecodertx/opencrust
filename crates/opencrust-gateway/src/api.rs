@@ -147,6 +147,13 @@ pub async fn send_message(
                     None,
                 )
                 .await;
+            if let Some((input, output, provider, model)) =
+                state.agents.take_session_usage(&session_id)
+            {
+                state
+                    .persist_usage(&session_id, &provider, &model, input, output)
+                    .await;
+            }
             (
                 StatusCode::OK,
                 Json(serde_json::json!(SendMessageResponse {
@@ -168,18 +175,11 @@ pub async fn send_message(
 }
 
 /// GET /api/sessions/:id/history — get session history.
+/// Loads from persistent storage if the session is not in memory (e.g. after server restart).
 pub async fn session_history(
     State(state): State<SharedState>,
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
-    if !state.sessions.contains_key(&session_id) {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "session not found" })),
-        )
-            .into_response();
-    }
-
     state
         .hydrate_session_history(&session_id, Some("api"), None)
         .await;

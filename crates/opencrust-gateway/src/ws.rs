@@ -113,22 +113,50 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
                     }
                     resume_id
                 } else {
-                    // Session expired or doesn't exist — create fresh
-                    let id = state.create_session();
-                    info!("resume failed (expired), new session: {}", id);
-                    let welcome = serde_json::json!({
-                        "type": "connected",
-                        "session_id": id,
-                        "note": "previous session expired",
-                    });
-                    if sender
-                        .send(Message::Text(welcome.to_string().into()))
-                        .await
-                        .is_err()
-                    {
-                        return;
+                    // Session not in memory — try to restore from persistent storage
+                    // (e.g. after server restart) before falling back to a fresh session.
+                    state
+                        .hydrate_session_history(&resume_id, Some("web"), None)
+                        .await;
+                    let history_len = state
+                        .sessions
+                        .get(&resume_id)
+                        .map(|s| s.history.len())
+                        .unwrap_or(0);
+
+                    if history_len > 0 {
+                        info!("restored session from DB: {}", resume_id);
+                        let ack = serde_json::json!({
+                            "type": "resumed",
+                            "session_id": resume_id,
+                            "history_length": history_len,
+                        });
+                        if sender
+                            .send(Message::Text(ack.to_string().into()))
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                        resume_id
+                    } else {
+                        // Truly new session — no history found in DB either
+                        let id = state.create_session();
+                        info!("resume failed (no history), new session: {}", id);
+                        let welcome = serde_json::json!({
+                            "type": "connected",
+                            "session_id": id,
+                            "note": "previous session expired",
+                        });
+                        if sender
+                            .send(Message::Text(welcome.to_string().into()))
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                        id
                     }
-                    id
                 }
             } else {
                 // First message is a regular chat message — create session, process it
@@ -330,6 +358,14 @@ async fn process_text_message(
                     None,
                 )
                 .await;
+
+            if let Some((input, output, provider, model)) =
+                state.agents.take_session_usage(session_id)
+            {
+                state
+                    .persist_usage(session_id, &provider, &model, input, output)
+                    .await;
+            }
 
             serde_json::json!({
                 "type": "message",

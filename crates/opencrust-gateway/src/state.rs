@@ -387,6 +387,25 @@ impl AppState {
         }
     }
 
+    /// Persist token usage for a completed agent turn to the session store.
+    pub async fn persist_usage(
+        &self,
+        session_id: &str,
+        provider: &str,
+        model: &str,
+        input_tokens: u32,
+        output_tokens: u32,
+    ) {
+        let Some(store) = &self.session_store else {
+            return;
+        };
+        let guard = store.lock().await;
+        if let Err(e) = guard.record_usage(session_id, provider, model, input_tokens, output_tokens)
+        {
+            warn!("failed to record usage for session {session_id}: {e}");
+        }
+    }
+
     /// Mark a session as disconnected (but don't remove it yet).
     pub fn disconnect_session(&self, session_id: &str) {
         if let Some(mut session) = self.sessions.get_mut(session_id) {
