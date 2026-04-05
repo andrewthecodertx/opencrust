@@ -1,5 +1,6 @@
 use opencrust_common::{Error, Result};
-use rusqlite::Connection;
+use r2d2::PooledConnection;
+use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::params;
 use std::path::Path;
 use tracing::{info, warn};
@@ -34,36 +35,45 @@ pub struct UsageAttribution<'a> {
 
 /// Persistent storage for conversation sessions and message history.
 pub struct SessionStore {
-    conn: Connection,
+    pool: r2d2::Pool<SqliteConnectionManager>,
 }
 
 impl SessionStore {
     pub fn open(db_path: &Path) -> Result<Self> {
         info!("opening session store at {}", db_path.display());
-        let conn = Connection::open(db_path)
-            .map_err(|e| Error::Database(format!("failed to open database: {e}")))?;
-
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
-            .map_err(|e| Error::Database(format!("failed to set pragmas: {e}")))?;
-
-        let store = Self { conn };
+        let manager = SqliteConnectionManager::file(db_path)
+            .with_init(|c| c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;"));
+        let pool = r2d2::Pool::builder()
+            .max_size(8)
+            .build(manager)
+            .map_err(|e| Error::Database(format!("failed to create connection pool: {e}")))?;
+        let store = Self { pool };
         store.run_migrations()?;
         Ok(store)
     }
 
     pub fn in_memory() -> Result<Self> {
-        let conn = Connection::open_in_memory()
-            .map_err(|e| Error::Database(format!("failed to open in-memory database: {e}")))?;
-
-        let store = Self { conn };
+        let manager = SqliteConnectionManager::memory()
+            .with_init(|c| c.execute_batch("PRAGMA foreign_keys=ON;"));
+        let pool = r2d2::Pool::builder()
+            .max_size(1)
+            .build(manager)
+            .map_err(|e| Error::Database(format!("failed to create in-memory pool: {e}")))?;
+        let store = Self { pool };
         store.run_migrations()?;
         Ok(store)
     }
 
+    fn conn(&self) -> Result<PooledConnection<SqliteConnectionManager>> {
+        self.pool
+            .get()
+            .map_err(|e| Error::Database(format!("failed to get db connection: {e}")))
+    }
+
     fn run_migrations(&self) -> Result<()> {
-        self.conn
-            .execute_batch(
-                "CREATE TABLE IF NOT EXISTS sessions (
+        let conn = self.conn()?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS sessions (
                     id TEXT PRIMARY KEY,
                     channel_id TEXT NOT NULL,
                     user_id TEXT NOT NULL,
@@ -97,25 +107,23 @@ impl SessionStore {
 
                 CREATE INDEX IF NOT EXISTS idx_tasks_execute_at
                     ON scheduled_tasks(execute_at) WHERE status = 'pending';",
-            )
-            .map_err(|e| Error::Database(format!("migration failed: {e}")))?;
+        )
+        .map_err(|e| Error::Database(format!("migration failed: {e}")))?;
 
         // Apply versioned migrations (idempotent: CREATE TABLE IF NOT EXISTS)
-        self.conn
-            .execute_batch(USAGE_SCHEMA_V1.sql)
+        conn.execute_batch(USAGE_SCHEMA_V1.sql)
             .map_err(|e| Error::Database(format!("usage migration failed: {e}")))?;
 
         // v2: add user_id and channel_id to usage_log (idempotent)
         for (col, col_type) in USAGE_SCHEMA_V2_COLUMNS {
             let sql = format!("ALTER TABLE usage_log ADD COLUMN {col} {col_type}");
-            if let Err(e) = self.conn.execute(&sql, [])
+            if let Err(e) = conn.execute(&sql, [])
                 && !e.to_string().contains("duplicate column")
             {
                 return Err(Error::Database(format!("usage v2 migration failed: {e}")));
             }
         }
-        self.conn
-            .execute_batch(USAGE_SCHEMA_V2_INDEX_SQL)
+        conn.execute_batch(USAGE_SCHEMA_V2_INDEX_SQL)
             .map_err(|e| Error::Database(format!("usage v2 index migration failed: {e}")))?;
 
         // Idempotent column additions for scheduling overhaul
@@ -133,7 +141,7 @@ impl SessionStore {
         for (col, col_type) in &columns {
             let sql = format!("ALTER TABLE scheduled_tasks ADD COLUMN {col} {col_type}");
             // Ignore "duplicate column" errors - column already exists
-            if let Err(e) = self.conn.execute(&sql, []) {
+            if let Err(e) = conn.execute(&sql, []) {
                 let msg = e.to_string();
                 if !msg.contains("duplicate column") {
                     return Err(Error::Database(format!("migration failed: {e}")));
@@ -144,8 +152,9 @@ impl SessionStore {
         Ok(())
     }
 
-    pub fn connection(&self) -> &Connection {
-        &self.conn
+    /// Expose a pooled connection for raw SQL access (used in tests).
+    pub fn connection(&self) -> Result<PooledConnection<SqliteConnectionManager>> {
+        self.conn()
     }
 
     /// Create or update a session row.
@@ -156,18 +165,18 @@ impl SessionStore {
         user_id: &str,
         metadata: &serde_json::Value,
     ) -> Result<()> {
-        self.conn
-            .execute(
-                "INSERT INTO sessions (id, channel_id, user_id, metadata)
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO sessions (id, channel_id, user_id, metadata)
                  VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT(id) DO UPDATE SET
                    channel_id = excluded.channel_id,
                    user_id = excluded.user_id,
                    metadata = excluded.metadata,
                    updated_at = datetime('now')",
-                params![session_id, channel_id, user_id, metadata.to_string()],
-            )
-            .map_err(|e| Error::Database(format!("failed to upsert session: {e}")))?;
+            params![session_id, channel_id, user_id, metadata.to_string()],
+        )
+        .map_err(|e| Error::Database(format!("failed to upsert session: {e}")))?;
         Ok(())
     }
 
@@ -181,20 +190,20 @@ impl SessionStore {
         metadata: &serde_json::Value,
     ) -> Result<()> {
         let message_id = uuid::Uuid::new_v4().to_string();
-        self.conn
-            .execute(
-                "INSERT INTO messages (id, session_id, direction, content, timestamp, metadata)
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO messages (id, session_id, direction, content, timestamp, metadata)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    message_id,
-                    session_id,
-                    direction,
-                    content,
-                    timestamp.to_rfc3339(),
-                    metadata.to_string()
-                ],
-            )
-            .map_err(|e| Error::Database(format!("failed to append message: {e}")))?;
+            params![
+                message_id,
+                session_id,
+                direction,
+                content,
+                timestamp.to_rfc3339(),
+                metadata.to_string()
+            ],
+        )
+        .map_err(|e| Error::Database(format!("failed to append message: {e}")))?;
         Ok(())
     }
 
@@ -204,8 +213,8 @@ impl SessionStore {
         session_id: &str,
         limit: usize,
     ) -> Result<Vec<StoredMessage>> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn()?;
+        let mut stmt = conn
             .prepare(
                 "SELECT direction, content, timestamp, metadata
                  FROM messages
@@ -250,26 +259,26 @@ impl SessionStore {
         payload: &str,
     ) -> Result<String> {
         let task_id = uuid::Uuid::new_v4().to_string();
-        self.conn
-            .execute(
-                "INSERT INTO scheduled_tasks (id, session_id, user_id, execute_at, payload, status)
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO scheduled_tasks (id, session_id, user_id, execute_at, payload, status)
                  VALUES (?1, ?2, ?3, ?4, ?5, 'pending')",
-                params![
-                    task_id,
-                    session_id,
-                    user_id,
-                    execute_at.to_rfc3339(),
-                    payload
-                ],
-            )
-            .map_err(|e| Error::Database(format!("failed to schedule task: {e}")))?;
+            params![
+                task_id,
+                session_id,
+                user_id,
+                execute_at.to_rfc3339(),
+                payload
+            ],
+        )
+        .map_err(|e| Error::Database(format!("failed to schedule task: {e}")))?;
         Ok(task_id)
     }
 
     /// Poll for pending tasks that are due for execution.
     pub fn poll_due_tasks(&self) -> Result<Vec<ScheduledTask>> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn()?;
+        let mut stmt = conn
             .prepare(
                 "SELECT t.id, t.session_id, s.channel_id, t.user_id, t.execute_at, t.payload,
                         s.metadata, t.retry_count, t.max_retries, t.heartbeat_depth,
@@ -321,8 +330,8 @@ impl SessionStore {
     /// Returns true if the task was still pending and is now completed,
     /// false if it was already cancelled or in another terminal state.
     pub fn complete_task(&self, task_id: &str) -> Result<bool> {
-        let rows = self
-            .conn
+        let conn = self.conn()?;
+        let rows = conn
             .execute(
                 "UPDATE scheduled_tasks SET status = 'completed' WHERE id = ?1 AND status = 'pending'",
                 params![task_id],
@@ -333,19 +342,19 @@ impl SessionStore {
 
     /// Mark a scheduled task as failed so it won't be retried.
     pub fn fail_task(&self, task_id: &str) -> Result<()> {
-        self.conn
-            .execute(
-                "UPDATE scheduled_tasks SET status = 'failed' WHERE id = ?1",
-                params![task_id],
-            )
-            .map_err(|e| Error::Database(format!("failed to mark task as failed: {e}")))?;
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE scheduled_tasks SET status = 'failed' WHERE id = ?1",
+            params![task_id],
+        )
+        .map_err(|e| Error::Database(format!("failed to mark task as failed: {e}")))?;
         Ok(())
     }
 
     /// Load the metadata JSON for a session.
     pub fn load_session_metadata(&self, session_id: &str) -> Result<Option<serde_json::Value>> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn()?;
+        let mut stmt = conn
             .prepare("SELECT metadata FROM sessions WHERE id = ?1")
             .map_err(|e| Error::Database(format!("failed to prepare metadata query: {e}")))?;
 
@@ -368,8 +377,8 @@ impl SessionStore {
     /// Delete all but the most recent `keep` messages for a session.
     /// Returns the number of deleted rows.
     pub fn prune_old_messages(&self, session_id: &str, keep: usize) -> Result<usize> {
-        let deleted = self
-            .conn
+        let conn = self.conn()?;
+        let deleted = conn
             .execute(
                 "DELETE FROM messages WHERE session_id = ?1 AND rowid NOT IN (
                     SELECT rowid FROM messages WHERE session_id = ?1
@@ -383,8 +392,8 @@ impl SessionStore {
 
     /// Count pending scheduled tasks for a given session.
     pub fn count_pending_tasks_for_session(&self, session_id: &str) -> Result<i64> {
-        let count: i64 = self
-            .conn
+        let conn = self.conn()?;
+        let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM scheduled_tasks WHERE session_id = ?1 AND status = 'pending'",
                 params![session_id],
@@ -397,8 +406,8 @@ impl SessionStore {
     /// Retry a failed task with exponential backoff, or mark it as permanently failed.
     /// Backoff schedule: 30s, 60s, 120s, 240s (doubles each retry).
     pub fn retry_or_fail_task(&self, task_id: &str) -> Result<bool> {
-        let (retry_count, max_retries): (i32, i32) = self
-            .conn
+        let conn = self.conn()?;
+        let (retry_count, max_retries): (i32, i32) = conn
             .query_row(
                 "SELECT COALESCE(retry_count, 0), COALESCE(max_retries, 3) FROM scheduled_tasks WHERE id = ?1",
                 params![task_id],
@@ -408,26 +417,29 @@ impl SessionStore {
 
         let new_count = retry_count + 1;
         if new_count > max_retries {
-            self.fail_task(task_id)?;
+            conn.execute(
+                "UPDATE scheduled_tasks SET status = 'failed' WHERE id = ?1",
+                params![task_id],
+            )
+            .map_err(|e| Error::Database(format!("failed to mark task as failed: {e}")))?;
             return Ok(false);
         }
 
         let backoff_secs = 30i64 * (1 << retry_count.min(7));
         let next_retry = chrono::Utc::now() + chrono::Duration::seconds(backoff_secs);
 
-        self.conn
-            .execute(
-                "UPDATE scheduled_tasks SET retry_count = ?1, next_retry_at = ?2 WHERE id = ?3",
-                params![new_count, next_retry.to_rfc3339(), task_id],
-            )
-            .map_err(|e| Error::Database(format!("failed to set retry: {e}")))?;
+        conn.execute(
+            "UPDATE scheduled_tasks SET retry_count = ?1, next_retry_at = ?2 WHERE id = ?3",
+            params![new_count, next_retry.to_rfc3339(), task_id],
+        )
+        .map_err(|e| Error::Database(format!("failed to set retry: {e}")))?;
         Ok(true)
     }
 
     /// Cancel a pending task, scoped to a session for safety.
     pub fn cancel_task(&self, task_id: &str, session_id: &str) -> Result<bool> {
-        let rows = self
-            .conn
+        let conn = self.conn()?;
+        let rows = conn
             .execute(
                 "UPDATE scheduled_tasks SET status = 'cancelled' WHERE id = ?1 AND session_id = ?2 AND status = 'pending'",
                 params![task_id, session_id],
@@ -438,8 +450,8 @@ impl SessionStore {
 
     /// List pending tasks for a session, ordered by execute_at.
     pub fn list_pending_tasks(&self, session_id: &str) -> Result<Vec<ScheduledTask>> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn()?;
+        let mut stmt = conn
             .prepare(
                 "SELECT t.id, t.session_id, s.channel_id, t.user_id, t.execute_at, t.payload,
                         s.metadata, t.retry_count, t.max_retries, t.heartbeat_depth,
@@ -489,16 +501,15 @@ impl SessionStore {
     /// along with all their associated messages. Returns the number of sessions deleted.
     pub fn cleanup_stale_sessions(&self, inactive_days: i64) -> Result<usize> {
         let interval = format!("-{inactive_days} days");
-        self.conn
-            .execute(
-                "DELETE FROM messages WHERE session_id IN (
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM messages WHERE session_id IN (
                      SELECT id FROM sessions WHERE updated_at < datetime('now', ?1)
                  )",
-                params![interval],
-            )
-            .map_err(|e| Error::Database(format!("failed to cleanup session messages: {e}")))?;
-        let deleted = self
-            .conn
+            params![interval],
+        )
+        .map_err(|e| Error::Database(format!("failed to cleanup session messages: {e}")))?;
+        let deleted = conn
             .execute(
                 "DELETE FROM sessions WHERE updated_at < datetime('now', ?1)",
                 params![interval],
@@ -510,8 +521,8 @@ impl SessionStore {
     /// Delete completed, failed, and cancelled tasks older than `older_than_days`.
     /// Returns the number of deleted rows.
     pub fn cleanup_completed_tasks(&self, older_than_days: i64) -> Result<usize> {
-        let deleted = self
-            .conn
+        let conn = self.conn()?;
+        let deleted = conn
             .execute(
                 "DELETE FROM scheduled_tasks
                  WHERE status IN ('completed', 'failed', 'cancelled')
@@ -539,27 +550,27 @@ impl SessionStore {
     ) -> Result<String> {
         let task_id = uuid::Uuid::new_v4().to_string();
         let end_at_str = recurrence_end_at.map(|dt| dt.to_rfc3339());
-        self.conn
-            .execute(
-                "INSERT INTO scheduled_tasks (id, session_id, user_id, execute_at, payload, status,
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO scheduled_tasks (id, session_id, user_id, execute_at, payload, status,
                     heartbeat_depth, recurrence_type, recurrence_value, recurrence_end_at,
                     deliver_to_channel, timezone)
                  VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8, ?9, ?10, ?11)",
-                params![
-                    task_id,
-                    session_id,
-                    user_id,
-                    execute_at.to_rfc3339(),
-                    payload,
-                    heartbeat_depth,
-                    recurrence_type,
-                    recurrence_value,
-                    end_at_str,
-                    deliver_to_channel,
-                    timezone,
-                ],
-            )
-            .map_err(|e| Error::Database(format!("failed to schedule task: {e}")))?;
+            params![
+                task_id,
+                session_id,
+                user_id,
+                execute_at.to_rfc3339(),
+                payload,
+                heartbeat_depth,
+                recurrence_type,
+                recurrence_value,
+                end_at_str,
+                deliver_to_channel,
+                timezone,
+            ],
+        )
+        .map_err(|e| Error::Database(format!("failed to schedule task: {e}")))?;
         Ok(task_id)
     }
 
@@ -572,7 +583,8 @@ impl SessionStore {
         output_tokens: u32,
     ) -> Result<()> {
         let id = uuid::Uuid::new_v4().to_string();
-        self.conn
+        let conn = self.conn()?;
+        conn
             .execute(
                 "INSERT INTO usage_log
                      (id, session_id, user_id, channel_id, provider, model, input_tokens, output_tokens)
@@ -607,8 +619,8 @@ impl SessionStore {
              COALESCE(SUM(input_tokens+output_tokens),0) \
              FROM usage_log WHERE user_id = ?1{date_filter}"
         );
-        let row: (i64, i64, i64) = self
-            .conn
+        let conn = self.conn()?;
+        let row: (i64, i64, i64) = conn
             .query_row(&sql, params![user_id], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })
@@ -656,16 +668,15 @@ impl SessionStore {
             )
         };
 
+        let conn = self.conn()?;
         let row: (i64, i64, i64) = if params_vec.is_empty() {
-            self.conn
-                .query_row(&sql, [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            conn.query_row(&sql, [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
                 .map_err(|e| Error::Database(format!("failed to query usage: {e}")))?
         } else {
-            self.conn
-                .query_row(&sql, params![params_vec[0]], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-                })
-                .map_err(|e| Error::Database(format!("failed to query usage: {e}")))?
+            conn.query_row(&sql, params![params_vec[0]], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .map_err(|e| Error::Database(format!("failed to query usage: {e}")))?
         };
 
         Ok(UsageRecord {
@@ -1217,6 +1228,7 @@ mod tests {
         // Backdate the created_at to 8 days ago so it qualifies for 7-day cleanup
         store
             .connection()
+            .unwrap()
             .execute(
                 "UPDATE scheduled_tasks SET created_at = datetime('now', '-8 days') WHERE id = ?1",
                 rusqlite::params![task_id],
@@ -1237,6 +1249,7 @@ mod tests {
             .unwrap();
         store
             .connection()
+            .unwrap()
             .execute(
                 "UPDATE scheduled_tasks SET created_at = datetime('now', '-8 days') WHERE id = ?1",
                 rusqlite::params![task_id2],
@@ -1270,6 +1283,7 @@ mod tests {
         // Backdate s1 to 91 days ago so it qualifies for 90-day cleanup
         store
             .connection()
+            .unwrap()
             .execute(
                 "UPDATE sessions SET updated_at = datetime('now', '-91 days') WHERE id = 's1'",
                 [],
@@ -1282,6 +1296,7 @@ mod tests {
         // Messages belonging to s1 should also be gone
         let msg_count: i64 = store
             .connection()
+            .unwrap()
             .query_row(
                 "SELECT COUNT(*) FROM messages WHERE session_id = 's1'",
                 [],
@@ -1293,6 +1308,7 @@ mod tests {
         // s2 should still exist
         let session_count: i64 = store
             .connection()
+            .unwrap()
             .query_row("SELECT COUNT(*) FROM sessions WHERE id = 's2'", [], |r| {
                 r.get(0)
             })

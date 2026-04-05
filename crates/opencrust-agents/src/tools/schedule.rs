@@ -3,7 +3,6 @@ use opencrust_common::{Error, Result};
 use opencrust_db::SessionStore;
 use serde_json::json;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 use crate::tools::{Tool, ToolContext, ToolOutput};
 
@@ -25,11 +24,11 @@ const MAX_HEARTBEAT_DEPTH: u8 = 3;
 
 /// Tool for scheduling a future "heartbeat" wake-up call for the agent.
 pub struct ScheduleHeartbeat {
-    store: Arc<Mutex<SessionStore>>,
+    store: Arc<SessionStore>,
 }
 
 impl ScheduleHeartbeat {
-    pub fn new(store: Arc<Mutex<SessionStore>>) -> Self {
+    pub fn new(store: Arc<SessionStore>) -> Self {
         Self { store }
     }
 }
@@ -207,10 +206,10 @@ impl Tool for ScheduleHeartbeat {
             .clone()
             .unwrap_or_else(|| "unknown".to_string());
 
-        let store = self.store.lock().await;
-
         // Enforce per-session pending task limit
-        let pending = store.count_pending_tasks_for_session(&context.session_id)?;
+        let pending = self
+            .store
+            .count_pending_tasks_for_session(&context.session_id)?;
         if pending >= MAX_PENDING_PER_SESSION {
             return Err(Error::Agent(format!(
                 "session already has {} pending heartbeats (max {})",
@@ -220,7 +219,7 @@ impl Tool for ScheduleHeartbeat {
 
         let next_depth = context.heartbeat_depth.saturating_add(1);
 
-        let task_id = store.schedule_task_full(
+        let task_id = self.store.schedule_task_full(
             &context.session_id,
             &user_id,
             execute_at,
@@ -259,11 +258,11 @@ impl Tool for ScheduleHeartbeat {
 
 /// Tool for cancelling a pending scheduled heartbeat.
 pub struct CancelHeartbeat {
-    store: Arc<Mutex<SessionStore>>,
+    store: Arc<SessionStore>,
 }
 
 impl CancelHeartbeat {
-    pub fn new(store: Arc<Mutex<SessionStore>>) -> Self {
+    pub fn new(store: Arc<SessionStore>) -> Self {
         Self { store }
     }
 }
@@ -296,8 +295,7 @@ impl Tool for CancelHeartbeat {
             .as_str()
             .ok_or_else(|| Error::Agent("missing or invalid 'task_id' argument".to_string()))?;
 
-        let store = self.store.lock().await;
-        let cancelled = store.cancel_task(task_id, &context.session_id)?;
+        let cancelled = self.store.cancel_task(task_id, &context.session_id)?;
 
         if cancelled {
             Ok(ToolOutput::success(format!(
@@ -319,11 +317,11 @@ impl Tool for CancelHeartbeat {
 
 /// Tool for listing pending scheduled heartbeats for the current session.
 pub struct ListHeartbeats {
-    store: Arc<Mutex<SessionStore>>,
+    store: Arc<SessionStore>,
 }
 
 impl ListHeartbeats {
-    pub fn new(store: Arc<Mutex<SessionStore>>) -> Self {
+    pub fn new(store: Arc<SessionStore>) -> Self {
         Self { store }
     }
 }
@@ -346,8 +344,7 @@ impl Tool for ListHeartbeats {
     }
 
     async fn execute(&self, context: &ToolContext, _args: serde_json::Value) -> Result<ToolOutput> {
-        let store = self.store.lock().await;
-        let tasks = store.list_pending_tasks(&context.session_id)?;
+        let tasks = self.store.list_pending_tasks(&context.session_id)?;
 
         if tasks.is_empty() {
             return Ok(ToolOutput::success("No pending heartbeats."));
@@ -407,16 +404,12 @@ mod tests {
         }
     }
 
-    async fn setup_store(session_id: &str) -> Arc<Mutex<SessionStore>> {
+    async fn setup_store(session_id: &str) -> Arc<SessionStore> {
         let store = SessionStore::in_memory().expect("in-memory store should open");
-        let store = Arc::new(Mutex::new(store));
-        {
-            let guard = store.lock().await;
-            guard
-                .upsert_session(session_id, "web", "u-1", &serde_json::json!({}))
-                .expect("session upsert should succeed");
-        }
         store
+            .upsert_session(session_id, "web", "u-1", &serde_json::json!({}))
+            .expect("session upsert should succeed");
+        Arc::new(store)
     }
 
     #[tokio::test]
@@ -591,16 +584,13 @@ mod tests {
     #[tokio::test]
     async fn pending_limit_is_per_session() {
         let store = SessionStore::in_memory().expect("in-memory store should open");
-        let store = Arc::new(Mutex::new(store));
-        {
-            let guard = store.lock().await;
-            guard
-                .upsert_session("s1", "web", "u1", &serde_json::json!({}))
-                .unwrap();
-            guard
-                .upsert_session("s2", "web", "u2", &serde_json::json!({}))
-                .unwrap();
-        }
+        store
+            .upsert_session("s1", "web", "u1", &serde_json::json!({}))
+            .unwrap();
+        store
+            .upsert_session("s2", "web", "u2", &serde_json::json!({}))
+            .unwrap();
+        let store = Arc::new(store);
 
         let tool = ScheduleHeartbeat::new(Arc::clone(&store));
 
@@ -666,24 +656,20 @@ mod tests {
         assert!(cancel_out.content.contains("cancelled"));
 
         // Verify it's gone from pending
-        let guard = store.lock().await;
-        let pending = guard.count_pending_tasks_for_session("sess-1").unwrap();
+        let pending = store.count_pending_tasks_for_session("sess-1").unwrap();
         assert_eq!(pending, 0);
     }
 
     #[tokio::test]
     async fn cancel_wrong_session_fails() {
         let store = SessionStore::in_memory().expect("in-memory store should open");
-        let store = Arc::new(Mutex::new(store));
-        {
-            let guard = store.lock().await;
-            guard
-                .upsert_session("s1", "web", "u1", &serde_json::json!({}))
-                .unwrap();
-            guard
-                .upsert_session("s2", "web", "u2", &serde_json::json!({}))
-                .unwrap();
-        }
+        store
+            .upsert_session("s1", "web", "u1", &serde_json::json!({}))
+            .unwrap();
+        store
+            .upsert_session("s2", "web", "u2", &serde_json::json!({}))
+            .unwrap();
+        let store = Arc::new(store);
 
         let schedule_tool = ScheduleHeartbeat::new(Arc::clone(&store));
         let cancel_tool = CancelHeartbeat::new(Arc::clone(&store));

@@ -9,7 +9,6 @@ use opencrust_common::{
 use opencrust_config::{AppConfig, ConfigWatcher};
 use opencrust_db::SessionStore;
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 #[cfg(target_os = "macos")]
@@ -65,7 +64,7 @@ impl GatewayServer {
         let sessions_db = data_dir.join("sessions.db");
         match SessionStore::open(&sessions_db) {
             Ok(store) => {
-                let store = Arc::new(Mutex::new(store));
+                let store = Arc::new(store);
                 state.set_session_store(Arc::clone(&store));
                 state
                     .agents
@@ -164,9 +163,8 @@ impl GatewayServer {
                 tick_count = tick_count.wrapping_add(1);
                 // Cleanup old completed/failed/cancelled tasks every ~hour (720 * 5s)
                 if tick_count.is_multiple_of(720)
-                    && let Some(store_mutex) = &scheduler_state.session_store
+                    && let Some(store) = &scheduler_state.session_store
                 {
-                    let store = store_mutex.lock().await;
                     match store.cleanup_completed_tasks(7) {
                         Ok(n) if n > 0 => info!("cleaned up {n} old scheduled tasks"),
                         Err(e) => tracing::error!("task cleanup failed: {e}"),
@@ -415,15 +413,12 @@ fn spawn_dna_watcher(state: Arc<AppState>, config_dir: PathBuf) {
 }
 
 async fn run_scheduler(state: &AppState) -> Result<()> {
-    let store_mutex = match &state.session_store {
+    let store = match &state.session_store {
         Some(s) => s,
         None => return Ok(()),
     };
 
-    let tasks = {
-        let store = store_mutex.lock().await;
-        store.poll_due_tasks()?
-    };
+    let tasks = store.poll_due_tasks()?;
 
     if tasks.is_empty() {
         return Ok(());
@@ -432,9 +427,8 @@ async fn run_scheduler(state: &AppState) -> Result<()> {
     info!("scheduler executing {} due tasks", tasks.len());
 
     for task in tasks {
-        if let Err(e) = execute_scheduled_task(state, store_mutex, &task).await {
+        if let Err(e) = execute_scheduled_task(state, store, &task).await {
             tracing::error!("Scheduled task {} failed: {e}", task.id);
-            let store = store_mutex.lock().await;
             match store.retry_or_fail_task(&task.id) {
                 Ok(true) => {
                     info!(
@@ -457,7 +451,7 @@ async fn run_scheduler(state: &AppState) -> Result<()> {
 
 async fn execute_scheduled_task(
     state: &AppState,
-    store_mutex: &Arc<Mutex<SessionStore>>,
+    store: &Arc<SessionStore>,
     task: &opencrust_db::ScheduledTask,
 ) -> Result<()> {
     // Resolve delivery channel: use override only if a sender is actually registered,
@@ -489,16 +483,13 @@ async fn execute_scheduled_task(
     };
 
     // 1. Persist system message to history so agent has context
-    {
-        let store = store_mutex.lock().await;
-        store.append_message(
-            &task.session_id,
-            "system",
-            &task.payload,
-            message.timestamp,
-            &task.session_metadata,
-        )?;
-    }
+    store.append_message(
+        &task.session_id,
+        "system",
+        &task.payload,
+        message.timestamp,
+        &task.session_metadata,
+    )?;
 
     // 2. Hydrate session history with the ORIGINAL session channel to avoid
     //    corrupting the session's channel_id when delivering cross-channel.
@@ -539,16 +530,13 @@ async fn execute_scheduled_task(
     };
 
     // 3. Persist assistant response regardless of outbound channel availability.
-    {
-        let store = store_mutex.lock().await;
-        store.append_message(
-            &task.session_id,
-            "assistant",
-            &response_text,
-            response_msg.timestamp,
-            &task.session_metadata,
-        )?;
-    }
+    store.append_message(
+        &task.session_id,
+        "assistant",
+        &response_text,
+        response_msg.timestamp,
+        &task.session_metadata,
+    )?;
 
     // 4. Best-effort delivery to channel adapter via sender handle.
     if let Some(sender) = state.channel_senders.get(delivery_channel) {
@@ -565,7 +553,6 @@ async fn execute_scheduled_task(
     // 5. Complete task and reschedule if recurring.
     //    Only reschedule if the task was still pending (not cancelled during execution).
     {
-        let store = store_mutex.lock().await;
         let was_completed = store.complete_task(&task.id)?;
         if was_completed {
             match store.reschedule_recurring_task(task) {
