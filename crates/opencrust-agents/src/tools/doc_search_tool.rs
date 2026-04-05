@@ -35,6 +35,12 @@ impl Tool for DocSearchTool {
         "Search ingested documents for content relevant to a query. Returns the most similar text chunks with source attribution."
     }
 
+    fn system_hint(&self) -> Option<&str> {
+        Some(
+            "Use this FIRST for any question about documents, data, regulations, properties, or reference material the user has shared. Do NOT use file_read for this.",
+        )
+    }
+
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",

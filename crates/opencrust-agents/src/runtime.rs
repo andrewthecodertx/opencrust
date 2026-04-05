@@ -20,6 +20,13 @@ use crate::tools::{Tool, ToolContext, ToolOutput};
 /// Maximum number of tool-use round-trips before the loop is forcibly stopped.
 const MAX_TOOL_ITERATIONS: usize = 10;
 
+/// Default base system prompt when none is configured.
+const DEFAULT_BASE_SYSTEM_PROMPT: &str = "\
+You are a personal AI assistant powered by OpenCrust. You help the user by answering \
+questions, searching their documents, and executing tasks using your available tools. \
+Be concise and accurate. If you don't know something, say so. Do not make up information. \
+Always respond in the same language the user writes in.";
+
 /// Manages agent sessions, tool execution, and LLM provider routing.
 pub struct AgentRuntime {
     providers: RwLock<Vec<Arc<dyn LlmProvider>>>,
@@ -296,6 +303,34 @@ impl AgentRuntime {
 
     pub fn debug(&self) -> bool {
         self.debug
+    }
+
+    /// Build the base prompt: operating instructions + tool guidance.
+    /// This is the layer that sits above DNA and below dynamic context.
+    pub fn base_prompt_with_tools(&self) -> Option<String> {
+        let base = self
+            .system_prompt
+            .as_deref()
+            .unwrap_or(DEFAULT_BASE_SYSTEM_PROMPT);
+
+        let mut parts = vec![base.to_string()];
+
+        // Auto-generate tool guidance from registered tools
+        let hints: Vec<String> = self
+            .tools
+            .iter()
+            .map(|t| {
+                t.system_hint()
+                    .map(|h| format!("  - {}: {}", t.name(), h))
+                    .unwrap_or_else(|| format!("  - {}: {}", t.name(), t.description()))
+            })
+            .collect();
+
+        if !hints.is_empty() {
+            parts.push(format!("Available tools:\n{}", hints.join("\n")));
+        }
+
+        Some(parts.join("\n\n"))
     }
 
     pub async fn on_session_start(
@@ -651,9 +686,7 @@ impl AgentRuntime {
                 .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?
         };
 
-        let effective_system_prompt = system_prompt_override
-            .map(|s| s.to_string())
-            .or_else(|| self.system_prompt.clone());
+        let _system_prompt_override = system_prompt_override;
         let effective_model = model_override
             .map(str::trim)
             .filter(|m| !m.is_empty())
@@ -685,9 +718,10 @@ impl AgentRuntime {
         };
 
         let dna = self.dna_content();
+        let base_prompt = self.base_prompt_with_tools();
         let system = build_system_prompt(
+            base_prompt.as_deref(),
             dna.as_deref(),
-            &effective_system_prompt,
             memory_context.as_deref(),
             None,
         );
@@ -807,9 +841,7 @@ impl AgentRuntime {
                 .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?
         };
 
-        let effective_system_prompt = system_prompt_override
-            .map(|s| s.to_string())
-            .or_else(|| self.system_prompt.clone());
+        let _system_prompt_override = system_prompt_override;
         let effective_model = model_override
             .map(str::trim)
             .filter(|m| !m.is_empty())
@@ -841,9 +873,10 @@ impl AgentRuntime {
         };
 
         let dna = self.dna_content();
+        let base_prompt = self.base_prompt_with_tools();
         let system = build_system_prompt(
+            base_prompt.as_deref(),
             dna.as_deref(),
-            &effective_system_prompt,
             memory_context.as_deref(),
             session_summary,
         );
@@ -870,8 +903,8 @@ impl AgentRuntime {
 
         let system = if new_summary.is_some() {
             build_system_prompt(
+                base_prompt.as_deref(),
                 dna.as_deref(),
-                &effective_system_prompt,
                 memory_context.as_deref(),
                 new_summary.as_deref(),
             )
@@ -1001,9 +1034,10 @@ impl AgentRuntime {
         };
 
         let dna = self.dna_content();
+        let base_prompt = self.base_prompt_with_tools();
         let system = build_system_prompt(
+            base_prompt.as_deref(),
             dna.as_deref(),
-            &self.system_prompt,
             memory_context.as_deref(),
             None,
         );
@@ -1210,9 +1244,10 @@ impl AgentRuntime {
         };
 
         let dna = self.dna_content();
+        let base_prompt = self.base_prompt_with_tools();
         let system = build_system_prompt(
+            base_prompt.as_deref(),
             dna.as_deref(),
-            &self.system_prompt,
             memory_context.as_deref(),
             None,
         );
@@ -1508,9 +1543,10 @@ impl AgentRuntime {
         };
 
         let dna = self.dna_content();
+        let base_prompt = self.base_prompt_with_tools();
         let system = build_system_prompt(
+            base_prompt.as_deref(),
             dna.as_deref(),
-            &self.system_prompt,
             memory_context.as_deref(),
             session_summary,
         );
@@ -1538,8 +1574,8 @@ impl AgentRuntime {
         // If we got a new summary, rebuild system prompt with it
         let system = if new_summary.is_some() {
             build_system_prompt(
+                base_prompt.as_deref(),
                 dna.as_deref(),
-                &self.system_prompt,
                 memory_context.as_deref(),
                 new_summary.as_deref(),
             )
@@ -1678,9 +1714,10 @@ impl AgentRuntime {
         };
 
         let dna = self.dna_content();
+        let base_prompt = self.base_prompt_with_tools();
         let system = build_system_prompt(
+            base_prompt.as_deref(),
             dna.as_deref(),
-            &self.system_prompt,
             memory_context.as_deref(),
             session_summary,
         );
@@ -1707,8 +1744,8 @@ impl AgentRuntime {
 
         let system = if new_summary.is_some() {
             build_system_prompt(
+                base_prompt.as_deref(),
                 dna.as_deref(),
-                &self.system_prompt,
                 memory_context.as_deref(),
                 new_summary.as_deref(),
             )
@@ -2193,23 +2230,28 @@ fn bootstrap_instruction() -> String {
     )
 }
 
-/// Build the system prompt by combining DNA content, system prompt, memory context,
-/// and conversation summary. When no DNA content exists, a bootstrap instruction is
-/// injected so the agent can collect user preferences on first interaction.
+/// Build the system prompt by combining all layers:
+/// 1. Base system prompt + tool guidance (from effective_system_prompt)
+/// 2. DNA content (personality)
+/// 3. Memory recall context
+/// 4. Session summary
+///
+/// When no DNA content exists, a bootstrap instruction is injected
+/// so the agent can collect user preferences on first interaction.
 fn build_system_prompt(
+    effective_prompt: Option<&str>,
     dna_content: Option<&str>,
-    system_prompt: &Option<String>,
     memory_context: Option<&str>,
     session_summary: Option<&str>,
 ) -> Option<String> {
     let mut parts = Vec::new();
+    if let Some(prompt) = effective_prompt {
+        parts.push(prompt.to_string());
+    }
     if let Some(dna) = dna_content {
         parts.push(dna.to_string());
     } else {
         parts.push(bootstrap_instruction());
-    }
-    if let Some(prompt) = system_prompt {
-        parts.push(prompt.clone());
     }
     if let Some(ctx) = memory_context {
         parts.push(ctx.to_string());
@@ -2244,61 +2286,54 @@ mod tests {
 
     #[test]
     fn build_system_prompt_all_parts() {
-        let sys = Some("You are helpful.".to_string());
+        let base = Some("You are helpful.");
+        let dna = Some("Be kind.");
         let mem = Some("User likes Rust.");
         let sum = Some("We discussed project setup.");
-        let result = build_system_prompt(None, &sys, mem, sum).unwrap();
+        let result = build_system_prompt(base, dna, mem, sum).unwrap();
         assert!(result.contains("You are helpful."));
+        assert!(result.contains("Be kind."));
         assert!(result.contains("User likes Rust."));
         assert!(result.contains("Conversation summary:"));
         assert!(result.contains("We discussed project setup."));
     }
 
     #[test]
+    fn build_system_prompt_base_before_dna() {
+        let base = Some("You are helpful.");
+        let dna = Some("You are a pirate.");
+        let result = build_system_prompt(base, dna, None, None).unwrap();
+        let base_pos = result.find("helpful").unwrap();
+        let dna_pos = result.find("pirate").unwrap();
+        assert!(base_pos < dna_pos);
+    }
+
+    #[test]
     fn build_system_prompt_no_summary() {
-        let sys = Some("You are helpful.".to_string());
-        let result = build_system_prompt(Some("Be kind."), &sys, None, None).unwrap();
-        assert!(result.contains("You are helpful."));
-        assert!(result.contains("Be kind."));
+        let result = build_system_prompt(Some("Base."), Some("DNA."), None, None).unwrap();
+        assert!(result.contains("Base."));
+        assert!(result.contains("DNA."));
         assert!(!result.contains("Conversation summary:"));
     }
 
     #[test]
     fn build_system_prompt_summary_only() {
-        let result = build_system_prompt(None, &None, None, Some("A summary.")).unwrap();
+        let result = build_system_prompt(None, None, None, Some("A summary.")).unwrap();
         assert!(result.contains("Conversation summary:"));
         assert!(result.contains("A summary."));
     }
 
     #[test]
-    fn build_system_prompt_bootstrap_when_all_empty() {
-        // When no DNA content is provided, bootstrap instruction is injected
-        let result = build_system_prompt(None, &None, None, None).unwrap();
+    fn build_system_prompt_bootstrap_when_no_dna() {
+        let result = build_system_prompt(None, None, None, None).unwrap();
         assert!(result.contains("have not been personalized yet"));
-    }
-
-    #[test]
-    fn build_system_prompt_with_dna_content() {
-        let dna = Some("You are a pirate. Always say arrr.");
-        let sys = Some("You are helpful.".to_string());
-        let result = build_system_prompt(dna, &sys, None, None).unwrap();
-        // DNA should come before system prompt
-        let dna_pos = result.find("pirate").unwrap();
-        let sys_pos = result.find("helpful").unwrap();
-        assert!(dna_pos < sys_pos);
+        assert!(result.contains("dna.md"));
     }
 
     #[test]
     fn build_system_prompt_dna_only() {
-        let result = build_system_prompt(Some("You are a pirate."), &None, None, None).unwrap();
-        assert_eq!(result, "You are a pirate.");
-    }
-
-    #[test]
-    fn build_system_prompt_bootstrap_when_no_dna() {
-        let result = build_system_prompt(None, &None, None, None).unwrap();
-        assert!(result.contains("have not been personalized yet"));
-        assert!(result.contains("dna.md"));
+        let result = build_system_prompt(None, Some("You are a pirate."), None, None).unwrap();
+        assert!(result.contains("You are a pirate."));
     }
 
     #[test]

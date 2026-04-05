@@ -42,6 +42,10 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str;
     fn input_schema(&self) -> serde_json::Value;
     async fn execute(&self, context: &ToolContext, input: serde_json::Value) -> Result<ToolOutput>;
+    /// Optional guidance for the system prompt about when to use this tool.
+    fn system_hint(&self) -> Option<&str> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

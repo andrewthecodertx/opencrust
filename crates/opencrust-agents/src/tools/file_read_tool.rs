@@ -50,6 +50,12 @@ impl Tool for FileReadTool {
         "Read the contents of a file at the given path."
     }
 
+    fn system_hint(&self) -> Option<&str> {
+        Some(
+            "Only use when the user provides a specific file path. Do NOT use this to search for documents.",
+        )
+    }
+
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
