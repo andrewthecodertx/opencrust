@@ -1333,12 +1333,6 @@ pub fn build_telegram_channels(
                             let caption_text = opencrust_security::InputValidator::sanitize(
                                 &caption.unwrap_or_else(|| "Describe this image.".to_string()),
                             );
-                            if opencrust_security::InputValidator::check_prompt_injection(
-                                &caption_text,
-                            ) {
-                                return Err("input rejected: potential prompt injection detected"
-                                    .to_string());
-                            }
                             if opencrust_security::InputValidator::exceeds_length(
                                 &caption_text,
                                 max_input_chars,
@@ -1346,6 +1340,12 @@ pub fn build_telegram_channels(
                                 return Err(format!(
                                     "input rejected: message exceeds {max_input_chars} character limit"
                                 ));
+                            }
+                            if opencrust_security::InputValidator::check_prompt_injection(
+                                &caption_text,
+                            ) {
+                                return Err("input rejected: potential prompt injection detected"
+                                    .to_string());
                             }
 
                             let blocks = vec![
