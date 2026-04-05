@@ -79,6 +79,28 @@ pub async fn create_task(
             .into_response();
     }
 
+    // Input validation
+    let guardrails = state.current_config().guardrails.clone();
+    let user_text = opencrust_security::InputValidator::sanitize(&user_text);
+    if opencrust_security::InputValidator::exceeds_length(&user_text, guardrails.max_input_chars) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!("input rejected: message exceeds {} character limit", guardrails.max_input_chars)
+            })),
+        )
+            .into_response();
+    }
+    if opencrust_security::InputValidator::check_prompt_injection(&user_text) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "input rejected: potential prompt injection detected"
+            })),
+        )
+            .into_response();
+    }
+
     // Create an initial task in "working" status
     let task = A2ATask {
         id: task_id.clone(),
@@ -114,6 +136,10 @@ pub async fn create_task(
 
     match result {
         Ok(response_text) => {
+            let response_text = opencrust_security::InputValidator::truncate_output(
+                &response_text,
+                guardrails.max_output_chars,
+            );
             state
                 .persist_turn(
                     &session_id,

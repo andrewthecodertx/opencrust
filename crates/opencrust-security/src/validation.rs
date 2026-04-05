@@ -50,6 +50,16 @@ impl InputValidator {
                     | '\u{200D}' // zero-width joiner
                     | '\u{200E}' // left-to-right mark
                     | '\u{200F}' // right-to-left mark
+                    // Bidi override/isolate characters (Trojan Source)
+                    | '\u{202A}' // left-to-right embedding
+                    | '\u{202B}' // right-to-left embedding
+                    | '\u{202C}' // pop directional formatting
+                    | '\u{202D}' // left-to-right override
+                    | '\u{202E}' // right-to-left override
+                    | '\u{2066}' // left-to-right isolate
+                    | '\u{2067}' // right-to-left isolate
+                    | '\u{2068}' // first strong isolate
+                    | '\u{2069}' // pop directional isolate
                     | '\u{2060}' // word joiner
                     | '\u{2061}' // function application
                     | '\u{2062}' // invisible times
@@ -64,18 +74,17 @@ impl InputValidator {
 
     /// Returns `true` if the input exceeds `max_chars` Unicode characters.
     pub fn exceeds_length(input: &str, max_chars: usize) -> bool {
-        input.chars().count() > max_chars
+        input.chars().nth(max_chars).is_some()
     }
 
     /// Truncate a response string to at most `max_chars` characters.
     /// Appends a notice if truncation occurred.
     pub fn truncate_output(text: &str, max_chars: usize) -> String {
-        let chars: Vec<char> = text.chars().collect();
-        if chars.len() <= max_chars {
+        if !Self::exceeds_length(text, max_chars) {
             return text.to_string();
         }
-        let truncated: String = chars[..max_chars].iter().collect();
-        format!("{truncated}\n\n_(Response truncated — exceeded {max_chars} character limit.)_")
+        let truncated: String = text.chars().take(max_chars).collect();
+        format!("{truncated}\n\n_(Response truncated - exceeded {max_chars} character limit.)_")
     }
 
     /// Validate that a channel identifier is well-formed.
@@ -162,10 +171,24 @@ mod tests {
     }
 
     #[test]
+    fn sanitizes_bidi_override_characters() {
+        // Trojan Source: bidi override/isolate chars used to reorder displayed code
+        let input = "normal\u{202E}reversed\u{202C}text\u{2066}isolated\u{2069}";
+        let sanitized = InputValidator::sanitize(input);
+        assert_eq!(sanitized, "normalreversedtextisolated");
+    }
+
+    #[test]
     fn exceeds_length_detects_long_input() {
         assert!(!InputValidator::exceeds_length("hello", 10));
         assert!(InputValidator::exceeds_length("hello world!", 5));
         assert!(!InputValidator::exceeds_length("hello", 5));
+    }
+
+    #[test]
+    fn exceeds_length_max_chars_zero() {
+        assert!(InputValidator::exceeds_length("a", 0));
+        assert!(!InputValidator::exceeds_length("", 0));
     }
 
     #[test]

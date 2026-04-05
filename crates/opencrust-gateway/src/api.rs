@@ -81,6 +81,28 @@ pub async fn send_message(
             .into_response();
     }
 
+    // Input validation
+    let guardrails = state.current_config().guardrails.clone();
+    let content = opencrust_security::InputValidator::sanitize(&body.content);
+    if opencrust_security::InputValidator::exceeds_length(&content, guardrails.max_input_chars) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!("input rejected: message exceeds {} character limit", guardrails.max_input_chars)
+            })),
+        )
+            .into_response();
+    }
+    if opencrust_security::InputValidator::check_prompt_injection(&content) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "input rejected: potential prompt injection detected"
+            })),
+        )
+            .into_response();
+    }
+
     // Hydrate history
     state
         .hydrate_session_history(&session_id, Some("api"), None)
@@ -97,7 +119,7 @@ pub async fn send_message(
             .agents
             .process_message_with_agent_config(
                 &session_id,
-                &body.content,
+                &content,
                 &history,
                 continuity_key.as_deref(),
                 None,
@@ -112,7 +134,7 @@ pub async fn send_message(
             .agents
             .process_message_with_agent_config(
                 &session_id,
-                &body.content,
+                &content,
                 &history,
                 continuity_key.as_deref(),
                 None,
@@ -127,7 +149,7 @@ pub async fn send_message(
             .agents
             .process_message_with_context(
                 &session_id,
-                &body.content,
+                &content,
                 &history,
                 continuity_key.as_deref(),
                 None,
@@ -137,12 +159,16 @@ pub async fn send_message(
 
     match result {
         Ok(response_text) => {
+            let response_text = opencrust_security::InputValidator::truncate_output(
+                &response_text,
+                guardrails.max_output_chars,
+            );
             state
                 .persist_turn(
                     &session_id,
                     Some("api"),
                     None,
-                    &body.content,
+                    &content,
                     &response_text,
                     None,
                 )

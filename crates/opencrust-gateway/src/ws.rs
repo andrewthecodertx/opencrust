@@ -306,6 +306,17 @@ async fn process_text_message(
 
     // Input validation
     let user_text = opencrust_security::InputValidator::sanitize(&user_text);
+    let guardrails = state.current_config().guardrails.clone();
+    if opencrust_security::InputValidator::exceeds_length(&user_text, guardrails.max_input_chars) {
+        let err = serde_json::json!({
+            "type": "error",
+            "session_id": session_id,
+            "code": "input_too_long",
+            "message": format!("input rejected: message exceeds {} character limit", guardrails.max_input_chars),
+        });
+        let _ = sender.send(Message::Text(err.to_string().into())).await;
+        return None;
+    }
     if opencrust_security::InputValidator::check_prompt_injection(&user_text) {
         warn!("prompt injection detected: session={}", session_id);
         let err = serde_json::json!({
@@ -347,6 +358,11 @@ async fn process_text_message(
             if let Some(s) = new_summary {
                 state.update_session_summary(session_id, &s);
             }
+
+            let response_text = opencrust_security::InputValidator::truncate_output(
+                &response_text,
+                guardrails.max_output_chars,
+            );
 
             state
                 .persist_turn(
