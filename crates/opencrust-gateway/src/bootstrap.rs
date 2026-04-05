@@ -1001,18 +1001,14 @@ pub fn build_discord_channels(
 async fn transcribe_voice(
     audio_bytes: &[u8],
     stt_base_url: Option<&str>,
+    stt_model: Option<&str>,
     config_api_key: Option<&str>,
 ) -> std::result::Result<String, String> {
     // 1. Local Whisper server — no API key needed
     if let Some(base_url) = stt_base_url {
         let endpoint = format!("{}/v1/audio/transcriptions", base_url.trim_end_matches('/'));
-        return whisper_transcribe(
-            audio_bytes,
-            "",
-            &endpoint,
-            "Systran/faster-whisper-large-v3",
-        )
-        .await;
+        let model = stt_model.unwrap_or("Systran/faster-whisper-large-v3");
+        return whisper_transcribe(audio_bytes, "", &endpoint, model).await;
     }
 
     // 2. API key from config
@@ -1155,8 +1151,18 @@ pub fn build_telegram_channels(
         let guardrails_config = Arc::new(config.guardrails.clone());
         let auto_reply_voice = config.voice.auto_reply_voice;
         let tts_provider = state.tts_provider.clone();
+        let tts_max_chars = config
+            .voice
+            .tts_max_chars
+            .unwrap_or(opencrust_media::TTS_DEFAULT_MAX_CHARS);
         let stt_base_url: Option<String> = config.voice.stt_base_url.clone();
-        let stt_api_key: Option<String> = config.voice.api_key.clone();
+        let stt_model: Option<String> = config.voice.stt_model.clone();
+        // Resolve STT API key via vault → config → env (same chain as all other keys).
+        let stt_api_key: Option<String> = resolve_api_key(
+            config.voice.api_key.as_deref(),
+            "VOICE_API_KEY",
+            "VOICE_API_KEY",
+        );
 
         let on_message: opencrust_channels::OnMessageFn = Arc::new(
             move |chat_id: i64,
@@ -1173,7 +1179,9 @@ pub fn build_telegram_channels(
                 let rate_limit_config = Arc::clone(&rate_limit_config);
                 let guardrails_config = Arc::clone(&guardrails_config);
                 let tts = tts_provider.clone();
+                let tts_max_chars = tts_max_chars;
                 let stt_base_url = stt_base_url.clone();
+                let stt_model = stt_model.clone();
                 let stt_api_key = stt_api_key.clone();
                 Box::pin(async move {
                     // --- Command handling (text-only) ---
@@ -1216,6 +1224,7 @@ pub fn build_telegram_channels(
                             let transcript = transcribe_voice(
                                 &data,
                                 stt_base_url.as_deref(),
+                                stt_model.as_deref(),
                                 stt_api_key.as_deref(),
                             )
                             .await?;
@@ -1304,20 +1313,18 @@ pub fn build_telegram_channels(
                                 max_output_chars,
                             );
                             // TTS: synthesize voice response if configured
-                            if auto_reply_voice {
-                                if let Some(ref provider) = tts {
-                                    match provider.synthesize(&response).await {
-                                        Ok(audio) => {
-                                            return Ok(ChannelResponse::Voice {
-                                                text: response,
-                                                audio,
-                                            });
-                                        }
-                                        Err(e) => {
-                                            warn!(
-                                                "tts synthesis failed, falling back to text: {e}"
-                                            );
-                                        }
+                            if auto_reply_voice && let Some(ref provider) = tts {
+                                let tts_input =
+                                    opencrust_media::truncate_for_tts(&response, tts_max_chars);
+                                match provider.synthesize(tts_input).await {
+                                    Ok(audio) => {
+                                        return Ok(ChannelResponse::Voice {
+                                            text: response,
+                                            audio,
+                                        });
+                                    }
+                                    Err(e) => {
+                                        warn!("tts synthesis failed, falling back to text: {e}");
                                     }
                                 }
                             }

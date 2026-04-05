@@ -1,9 +1,19 @@
+use std::sync::Arc;
+use std::time::Duration;
+
 use async_trait::async_trait;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Raw audio bytes returned by a TTS provider.
 /// Always OGG/Opus so every voice-capable channel can send it directly.
 pub type AudioBytes = Vec<u8>;
+
+/// Default character limit sent to a TTS backend.
+/// OpenAI's hard limit is 4096; we default to 4000 to leave a safe margin.
+pub const TTS_DEFAULT_MAX_CHARS: usize = 4000;
+
+/// Timeout for TTS HTTP requests (synthesis + body download).
+const TTS_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Abstraction over any text-to-speech backend.
 #[async_trait]
@@ -16,24 +26,51 @@ pub trait TtsProvider: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// OpenAI TTS  (tts-1 / tts-1-hd)
+// Shared reqwest client (connection-pool reuse)
 // ---------------------------------------------------------------------------
 
-/// Calls the OpenAI `/v1/audio/speech` endpoint.
+fn tts_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(TTS_HTTP_TIMEOUT)
+        .build()
+        .expect("failed to build TTS HTTP client")
+}
+
+// ---------------------------------------------------------------------------
+// OpenAI TTS  (tts-1 / tts-1-hd, or any OpenAI-compatible endpoint)
+// ---------------------------------------------------------------------------
+
+/// Calls an OpenAI-compatible `/v1/audio/speech` endpoint.
+/// Defaults to `https://api.openai.com`; set `base_url` for self-hosted servers.
 pub struct OpenAiTts {
     client: reqwest::Client,
     api_key: String,
     model: String,
     voice: String,
+    /// Base URL without trailing slash, e.g. `https://api.openai.com`.
+    base_url: String,
 }
 
 impl OpenAiTts {
     pub fn new(api_key: String, model: Option<String>, voice: Option<String>) -> Self {
+        Self::with_base_url(api_key, model, voice, None)
+    }
+
+    pub fn with_base_url(
+        api_key: String,
+        model: Option<String>,
+        voice: Option<String>,
+        base_url: Option<String>,
+    ) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: tts_http_client(),
             api_key,
             model: model.unwrap_or_else(|| "tts-1".to_string()),
             voice: voice.unwrap_or_else(|| "alloy".to_string()),
+            base_url: base_url
+                .unwrap_or_else(|| "https://api.openai.com".to_string())
+                .trim_end_matches('/')
+                .to_string(),
         }
     }
 }
@@ -46,9 +83,10 @@ impl TtsProvider for OpenAiTts {
 
     async fn synthesize(&self, text: &str) -> Result<AudioBytes, String> {
         info!("openai tts: synthesizing {} chars", text.len());
+        let url = format!("{}/v1/audio/speech", self.base_url);
         let resp = self
             .client
-            .post("https://api.openai.com/v1/audio/speech")
+            .post(&url)
             .bearer_auth(&self.api_key)
             .json(&serde_json::json!({
                 "model": self.model,
@@ -84,7 +122,7 @@ impl TtsProvider for OpenAiTts {
 // Config example:
 //   voice:
 //     tts_provider: kokoro
-//     base_url: http://localhost:8880
+//     tts_base_url: http://localhost:8880
 //     voice: af_heart
 //     auto_reply_voice: true
 // ---------------------------------------------------------------------------
@@ -100,7 +138,7 @@ pub struct KokoroTts {
 impl KokoroTts {
     pub fn new(base_url: Option<String>, voice: Option<String>) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: tts_http_client(),
             base_url: base_url
                 .unwrap_or_else(|| "http://localhost:8880".to_string())
                 .trim_end_matches('/')
@@ -150,8 +188,6 @@ impl TtsProvider for KokoroTts {
 // Factory
 // ---------------------------------------------------------------------------
 
-use std::sync::Arc;
-
 /// Build a `TtsProvider` from config values.
 /// Returns `None` if `tts_provider` is not set or unrecognised.
 #[allow(unused_variables)]
@@ -165,7 +201,12 @@ pub fn build_tts_provider(
     match tts_provider? {
         "openai" => {
             let key = api_key?;
-            Some(Arc::new(OpenAiTts::new(key, model, voice)))
+            Some(Arc::new(OpenAiTts::with_base_url(
+                key,
+                model,
+                voice,
+                tts_base_url,
+            )))
         }
         #[cfg(feature = "tts-kokoro")]
         "kokoro" => Some(Arc::new(KokoroTts::new(tts_base_url, voice))),
@@ -182,6 +223,26 @@ pub fn build_tts_provider(
             None
         }
     }
+}
+
+/// Truncate `text` to `max_chars` Unicode characters before sending to TTS.
+/// Logs a warning if truncation occurs.
+pub fn truncate_for_tts(text: &str, max_chars: usize) -> &str {
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        return text;
+    }
+    warn!(
+        "tts: response ({} chars) exceeds limit ({}), truncating",
+        char_count, max_chars
+    );
+    // Find byte offset of the max_chars-th char boundary.
+    let byte_end = text
+        .char_indices()
+        .nth(max_chars)
+        .map(|(i, _)| i)
+        .unwrap_or(text.len());
+    &text[..byte_end]
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +285,37 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // truncate_for_tts
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn truncate_for_tts_short_text_unchanged() {
+        assert_eq!(truncate_for_tts("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_for_tts_exact_limit_unchanged() {
+        let s = "a".repeat(100);
+        assert_eq!(truncate_for_tts(&s, 100), s);
+    }
+
+    #[test]
+    fn truncate_for_tts_long_text_truncated() {
+        let s = "a".repeat(4001);
+        let t = truncate_for_tts(&s, 4000);
+        assert_eq!(t.chars().count(), 4000);
+    }
+
+    #[test]
+    fn truncate_for_tts_unicode_boundary() {
+        // 3-byte UTF-8 chars (Thai) — ensure we don't split mid-char
+        let s = "ก".repeat(10); // 10 Thai chars = 30 bytes
+        let t = truncate_for_tts(&s, 5);
+        assert_eq!(t.chars().count(), 5);
+        assert!(std::str::from_utf8(t.as_bytes()).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
     // OpenAiTts
     // -----------------------------------------------------------------------
 
@@ -242,10 +334,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        // Point OpenAiTts at the mock server by building it directly and
-        // overriding the URL via a custom client with a base-url prefix.
-        // Since OpenAiTts hardcodes the URL, we test via a wrapper struct.
-        let tts = OpenAiTtsWithBaseUrl::new("sk-test".into(), None, None, server.uri());
+        let tts = OpenAiTts::with_base_url("sk-test".into(), None, None, Some(server.uri()));
         let audio = tts.synthesize("hello world").await.unwrap();
         assert_eq!(audio, FAKE_AUDIO);
     }
@@ -260,66 +349,29 @@ mod tests {
             .mount(&server)
             .await;
 
-        let tts = OpenAiTtsWithBaseUrl::new("bad-key".into(), None, None, server.uri());
+        let tts = OpenAiTts::with_base_url("bad-key".into(), None, None, Some(server.uri()));
         let err = tts.synthesize("hello").await.unwrap_err();
         assert!(err.contains("401"), "expected 401 in error: {err}");
     }
 
-    // -----------------------------------------------------------------------
-    // Helper: OpenAiTts with configurable base URL (test-only)
-    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn openai_tts_custom_base_url() {
+        let server = MockServer::start().await;
 
-    struct OpenAiTtsWithBaseUrl {
-        client: reqwest::Client,
-        api_key: String,
-        model: String,
-        voice: String,
-        base_url: String,
-    }
+        Mock::given(method("POST"))
+            .and(path("/v1/audio/speech"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(FAKE_AUDIO)
+                    .insert_header("content-type", "audio/ogg"),
+            )
+            .mount(&server)
+            .await;
 
-    impl OpenAiTtsWithBaseUrl {
-        fn new(
-            api_key: String,
-            model: Option<String>,
-            voice: Option<String>,
-            base_url: String,
-        ) -> Self {
-            Self {
-                client: reqwest::Client::new(),
-                api_key,
-                model: model.unwrap_or_else(|| "tts-1".to_string()),
-                voice: voice.unwrap_or_else(|| "alloy".to_string()),
-                base_url: base_url.trim_end_matches('/').to_string(),
-            }
-        }
-
-        async fn synthesize(&self, text: &str) -> Result<AudioBytes, String> {
-            let url = format!("{}/v1/audio/speech", self.base_url);
-            let resp = self
-                .client
-                .post(&url)
-                .bearer_auth(&self.api_key)
-                .json(&serde_json::json!({
-                    "model": self.model,
-                    "input": text,
-                    "voice": self.voice,
-                    "response_format": "opus",
-                }))
-                .send()
-                .await
-                .map_err(|e| format!("openai tts request failed: {e}"))?;
-
-            let status = resp.status();
-            if !status.is_success() {
-                let body = resp.text().await.unwrap_or_default();
-                return Err(format!("openai tts error {status}: {body}"));
-            }
-
-            resp.bytes()
-                .await
-                .map(|b| b.to_vec())
-                .map_err(|e| format!("openai tts read body failed: {e}"))
-        }
+        // Verify tts_base_url routes to a non-openai.com host
+        let tts = OpenAiTts::with_base_url("sk-test".into(), None, None, Some(server.uri()));
+        let audio = tts.synthesize("test").await.unwrap();
+        assert_eq!(audio, FAKE_AUDIO);
     }
 
     // -----------------------------------------------------------------------

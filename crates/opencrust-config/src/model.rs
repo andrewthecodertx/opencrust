@@ -385,10 +385,12 @@ pub struct VoiceConfig {
     pub model: Option<String>,
 
     /// Base URL for a self-hosted TTS server (e.g. `http://localhost:8881` for Kokoro FastAPI).
+    /// Also works with any OpenAI-compatible TTS endpoint when `tts_provider = "openai"`.
     #[serde(default, alias = "base_url")]
     pub tts_base_url: Option<String>,
 
-    /// API key override for the TTS provider. Falls back to the active LLM provider key.
+    /// API key for the TTS/STT provider. Checked after vault, before env var.
+    /// Falls back to the OpenAI provider key when not set.
     #[serde(default)]
     pub api_key: Option<String>,
 
@@ -396,6 +398,15 @@ pub struct VoiceConfig {
     /// When set, transcription is routed here instead of OpenAI/Groq and no API key is required.
     #[serde(default)]
     pub stt_base_url: Option<String>,
+
+    /// Whisper model ID for self-hosted STT (default: `Systran/faster-whisper-large-v3`).
+    #[serde(default)]
+    pub stt_model: Option<String>,
+
+    /// Maximum characters sent to TTS synthesis (default: 4000).
+    /// Protects against OpenAI's 4096-char limit and oversized Kokoro responses.
+    #[serde(default)]
+    pub tts_max_chars: Option<usize>,
 
     /// When `true`, voice-message inputs receive a voice response.
     #[serde(default)]
