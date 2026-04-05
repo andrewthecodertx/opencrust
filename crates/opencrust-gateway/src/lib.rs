@@ -3,6 +3,7 @@ pub mod agent_router;
 pub mod api;
 pub mod bootstrap;
 pub mod google_secrets;
+pub mod ingest;
 pub mod router;
 pub mod server;
 pub mod state;

@@ -11,6 +11,7 @@ opencrust-config = { workspace = true }
 opencrust-channels = { workspace = true, features = ["discord", "telegram", "slack", "whatsapp", "whatsapp-web", "imessage", "line", "wechat"] }
 opencrust-agents = { workspace = true, features = ["mcp"] }
 opencrust-db = { workspace = true }
+opencrust-media = { workspace = true }
 opencrust-security = { workspace = true }
 opencrust-skills = { workspace = true }
 

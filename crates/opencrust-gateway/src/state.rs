@@ -61,6 +61,16 @@ pub struct AppState {
     user_rate_limits: DashMap<String, UserRateLimitEntry>,
     /// Accumulated token counts per session (input + output), reset on session eviction.
     session_token_counts: DashMap<String, u32>,
+    /// Pending files awaiting ingestion confirmation, keyed by session_id.
+    pending_files: DashMap<String, PendingFile>,
+}
+
+/// A file received in chat waiting for the user to confirm ingestion.
+#[derive(Debug, Clone)]
+pub struct PendingFile {
+    pub filename: String,
+    pub data: Vec<u8>,
+    pub received_at: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -103,7 +113,29 @@ impl AppState {
             config_rx: None,
             user_rate_limits: DashMap::new(),
             session_token_counts: DashMap::new(),
+            pending_files: DashMap::new(),
         }
+    }
+
+    /// Store a file pending ingestion confirmation for a session.
+    pub fn set_pending_file(&self, session_id: &str, file: PendingFile) {
+        self.pending_files.insert(session_id.to_string(), file);
+    }
+
+    /// Take and remove a pending file for a session.
+    pub fn take_pending_file(&self, session_id: &str) -> Option<PendingFile> {
+        self.pending_files
+            .remove(session_id)
+            .map(|(_, f)| f)
+            .filter(|f| f.received_at.elapsed() < Duration::from_secs(300)) // 5 min expiry
+    }
+
+    /// Check if a session has a pending file.
+    pub fn has_pending_file(&self, session_id: &str) -> bool {
+        self.pending_files
+            .get(session_id)
+            .map(|f| f.received_at.elapsed() < Duration::from_secs(300))
+            .unwrap_or(false)
     }
 
     /// Attach a persistent session store used to hydrate and persist chat history.

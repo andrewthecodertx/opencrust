@@ -1120,6 +1120,10 @@ pub fn build_telegram_channels(
         let max_output_chars = config.guardrails.max_output_chars;
         let rate_limit_config = Arc::new(config.gateway.rate_limit.clone());
         let guardrails_config = Arc::new(config.guardrails.clone());
+        let data_dir = config
+            .data_dir
+            .clone()
+            .unwrap_or_else(|| opencrust_config::ConfigLoader::default_config_dir().join("data"));
 
         let on_message: opencrust_channels::OnMessageFn = Arc::new(
             move |chat_id: i64,
@@ -1135,10 +1139,73 @@ pub fn build_telegram_channels(
                 let policy = Arc::clone(&policy_for_cb);
                 let rate_limit_config = Arc::clone(&rate_limit_config);
                 let guardrails_config = Arc::clone(&guardrails_config);
+                let data_dir = data_dir.clone();
                 Box::pin(async move {
                     // --- Command handling (text-only) ---
                     if let Some(cmd) = text.strip_prefix('/') {
                         let cmd = cmd.split_whitespace().next().unwrap_or("");
+
+                        // /ingest - async, needs data_dir and embedding provider
+                        if cmd == "ingest" {
+                            let session_id = format!("telegram-{chat_id}");
+                            if let Some(pending) = state.take_pending_file(&session_id) {
+                                let doc_store =
+                                    opencrust_db::DocumentStore::open(&data_dir.join("memory.db"))
+                                        .map_err(|e| {
+                                            format!("failed to open document store: {e}")
+                                        })?;
+
+                                let embed = state.agents.embedding_provider();
+                                let replace = text.to_lowercase().contains("replace");
+
+                                return match crate::ingest::ingest_from_bytes(
+                                    &pending.filename,
+                                    &pending.data,
+                                    &doc_store,
+                                    embed.as_deref(),
+                                    replace,
+                                )
+                                .await
+                                {
+                                    Ok(result) => {
+                                        let action = if result.replaced {
+                                            "Replaced"
+                                        } else {
+                                            "Ingested"
+                                        };
+                                        let embed_note = if result.has_embeddings {
+                                            " with embeddings"
+                                        } else {
+                                            ""
+                                        };
+                                        Ok(format!(
+                                            "{action} {} ({} chunks{embed_note}). You can now ask me anything about this document.",
+                                            pending.filename, result.chunk_count
+                                        ))
+                                    }
+                                    Err(e) => {
+                                        let msg = e.to_string();
+                                        if msg.contains("already ingested") {
+                                            Ok(format!(
+                                                "{} is already ingested. Use /ingest replace to update it.",
+                                                pending.filename
+                                            ))
+                                        } else {
+                                            Err(format!(
+                                                "Failed to ingest {}: {msg}",
+                                                pending.filename
+                                            ))
+                                        }
+                                    }
+                                };
+                            } else {
+                                return Ok(
+                                    "No pending file. Send a document first, then use /ingest."
+                                        .to_string(),
+                                );
+                            }
+                        }
+
                         return handle_command(
                             cmd, &text, &user_id, &user_name, chat_id, &allowlist, &pairing,
                             &policy, &state,
@@ -1367,65 +1434,55 @@ pub fn build_telegram_channels(
                             }
 
                             let fname = filename.unwrap_or_else(|| "file".to_string());
-                            let ext = fname.rsplit('.').next().unwrap_or("").to_lowercase();
-                            let text_exts = [
-                                "txt", "md", "json", "csv", "log", "py", "rs", "js", "ts", "toml",
-                                "yaml", "yml", "xml", "html",
-                            ];
+                            let caption_text = caption.unwrap_or_default().trim().to_lowercase();
 
-                            if !text_exts.contains(&ext.as_str()) {
-                                return Err(format!(
-                                    "Unsupported file type (.{ext}). Supported: \
-                                     txt, md, json, csv, py, rs, js, ts, toml, yaml, yml, xml, html"
-                                ));
-                            }
+                            // If caption contains "ingest", ingest immediately
+                            if caption_text.contains("ingest") {
+                                let doc_store =
+                                    opencrust_db::DocumentStore::open(&data_dir.join("memory.db"))
+                                        .map_err(|e| {
+                                            format!("failed to open document store: {e}")
+                                        })?;
 
-                            let file_content = String::from_utf8(data).map_err(|_| {
-                                "File does not appear to be valid UTF-8 text.".to_string()
-                            })?;
-                            let user_text = format!(
-                                "```{fname}\n{file_content}\n```\n\n{}",
-                                caption.unwrap_or_default()
-                            );
+                                let embed = state.agents.embedding_provider();
+                                let replace = caption_text.contains("replace");
 
-                            let text = opencrust_security::InputValidator::sanitize(&user_text);
-                            if opencrust_security::InputValidator::check_prompt_injection(&text) {
-                                return Err("input rejected: potential prompt injection detected"
-                                    .to_string());
-                            }
-                            if opencrust_security::InputValidator::exceeds_length(
-                                &text,
-                                max_input_chars,
-                            ) {
-                                return Err(format!(
-                                    "input rejected: message exceeds {max_input_chars} character limit"
-                                ));
-                            }
-
-                            state
-                                .hydrate_session_history(
-                                    &session_id,
-                                    Some("telegram"),
-                                    Some(&user_id),
+                                match crate::ingest::ingest_from_bytes(
+                                    &fname,
+                                    &data,
+                                    &doc_store,
+                                    embed.as_deref(),
+                                    replace,
                                 )
-                                .await;
-                            let history: Vec<ChatMessage> = state.session_history(&session_id);
-                            let continuity_key = state.continuity_key(Some(&user_id));
-                            let summary = state.session_summary(&session_id);
-
-                            let (response, new_summary) = if let Some(delta_sender) = delta_tx {
-                                state
-                                    .agents
-                                    .process_message_streaming_with_context_and_summary(
-                                        &session_id,
-                                        &text,
-                                        &history,
-                                        delta_sender,
-                                        summary.as_deref(),
-                                        continuity_key.as_deref(),
-                                        Some(&user_id),
-                                    )
-                                    .await
+                                .await
+                                {
+                                    Ok(result) => {
+                                        let action = if result.replaced {
+                                            "Replaced"
+                                        } else {
+                                            "Ingested"
+                                        };
+                                        let embed_note = if result.has_embeddings {
+                                            " with embeddings"
+                                        } else {
+                                            ""
+                                        };
+                                        Ok(format!(
+                                            "{action} {fname} ({} chunks{embed_note}). You can now ask me anything about this document.",
+                                            result.chunk_count
+                                        ))
+                                    }
+                                    Err(e) => {
+                                        let msg = e.to_string();
+                                        if msg.contains("already ingested") {
+                                            Ok(format!(
+                                                "{fname} is already ingested. Send it again with caption \"ingest replace\" to update it."
+                                            ))
+                                        } else {
+                                            Err(format!("Failed to ingest {fname}: {msg}"))
+                                        }
+                                    }
+                                }
                             } else {
                                 state
                                     .agents
@@ -1451,25 +1508,23 @@ pub fn build_telegram_channels(
                             );
                             state
                                 .persist_turn(
+                                // Store as pending and prompt
+                                state.set_pending_file(
                                     &session_id,
-                                    Some("telegram"),
-                                    Some(&user_id),
-                                    &text,
-                                    &response,
-                                    Some(serde_json::json!({"telegram_chat_id": chat_id})),
-                                )
-                                .await;
-                            if let Some((input, output, provider, model)) =
-                                state.agents.take_session_usage(&session_id)
-                            {
-                                state
-                                    .persist_usage(&session_id, &provider, &model, input, output)
-                                    .await;
+                                    crate::state::PendingFile {
+                                        filename: fname.clone(),
+                                        data,
+                                        received_at: std::time::Instant::now(),
+                                    },
+                                );
+                                Ok(format!(
+                                    "Received {fname}. Use /ingest to store it for future reference."
+                                ))
                             }
                             Ok(response)
                         }
                         None => {
-                            // Existing text-only path
+                            // Regular text-only path
                             let text = opencrust_security::InputValidator::sanitize(&text);
                             if opencrust_security::InputValidator::check_prompt_injection(&text) {
                                 return Err("input rejected: potential prompt injection detected"
@@ -1614,7 +1669,8 @@ fn handle_command(
             }
             let mut help = "OpenCrust Commands:\n\
                 /help - show this help\n\
-                /clear - reset conversation history"
+                /clear - reset conversation history\n\
+                /ingest - store a sent document for future reference"
                 .to_string();
             if is_owner {
                 help.push_str(
@@ -1723,7 +1779,8 @@ fn handle_discord_command(
             }
             let mut help = "OpenCrust Commands:\n\
                 /help - show this help\n\
-                /clear - reset conversation history"
+                /clear - reset conversation history\n\
+                /ingest - store a sent document for future reference"
                 .to_string();
             if is_owner {
                 help.push_str(
