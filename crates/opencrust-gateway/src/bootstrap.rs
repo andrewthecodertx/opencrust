@@ -1226,18 +1226,18 @@ pub fn build_telegram_channels(
                                         } else {
                                             ""
                                         };
-                                        Ok(format!(
+                                        Ok(ChannelResponse::Text(format!(
                                             "{action} {} ({} chunks{embed_note}). You can now ask me anything about this document.",
                                             pending.filename, result.chunk_count
-                                        ))
+                                        )))
                                     }
                                     Err(e) => {
                                         let msg = e.to_string();
                                         if msg.contains("already ingested") {
-                                            Ok(format!(
+                                            Ok(ChannelResponse::Text(format!(
                                                 "{} is already ingested. Use /ingest replace to update it.",
                                                 pending.filename
-                                            ))
+                                            )))
                                         } else {
                                             Err(format!(
                                                 "Failed to ingest {}: {msg}",
@@ -1247,10 +1247,10 @@ pub fn build_telegram_channels(
                                     }
                                 };
                             } else {
-                                return Ok(
+                                return Ok(ChannelResponse::Text(
                                     "No pending file. Send a document first, then use /ingest."
                                         .to_string(),
-                                );
+                                ));
                             }
                         }
 
@@ -1546,17 +1546,17 @@ pub fn build_telegram_channels(
                                         } else {
                                             ""
                                         };
-                                        Ok(format!(
+                                        Ok(ChannelResponse::Text(format!(
                                             "{action} {fname} ({} chunks{embed_note}). You can now ask me anything about this document.",
                                             result.chunk_count
-                                        ))
+                                        )))
                                     }
                                     Err(e) => {
                                         let msg = e.to_string();
                                         if msg.contains("already ingested") {
-                                            Ok(format!(
+                                            Ok(ChannelResponse::Text(format!(
                                                 "{fname} is already ingested. Send it again with caption \"ingest replace\" to update it."
-                                            ))
+                                            )))
                                         } else {
                                             Err(format!("Failed to ingest {fname}: {msg}"))
                                         }
@@ -1572,15 +1572,10 @@ pub fn build_telegram_channels(
                                         received_at: std::time::Instant::now(),
                                     },
                                 );
-                                Ok(format!(
+                                Ok(ChannelResponse::Text(format!(
                                     "Received {fname}. Use /ingest to store it for future reference."
-                                ))
+                                )))
                             }
-                            let response = opencrust_security::InputValidator::truncate_output(
-                                &response,
-                                max_output_chars,
-                            );
-                            Ok(ChannelResponse::Text(response))
                         }
                         None => {
                             // Regular text-only path
