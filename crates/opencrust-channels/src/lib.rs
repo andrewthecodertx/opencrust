@@ -33,7 +33,7 @@ pub use registry::ChannelRegistry;
 #[cfg(feature = "slack")]
 pub use slack::{SlackChannel, SlackGroupFilter, SlackOnMessageFn};
 #[cfg(feature = "telegram")]
-pub use telegram::{GroupFilter, MediaAttachment, OnMessageFn, TelegramChannel};
+pub use telegram::{ChannelResponse, GroupFilter, MediaAttachment, OnMessageFn, TelegramChannel};
 pub use traits::{Channel, ChannelEvent, ChannelLifecycle, ChannelSender, ChannelStatus};
 #[cfg(feature = "wechat")]
 pub use wechat::webhook::{WeChatWebhookState, wechat_webhook, wechat_webhook_verify};

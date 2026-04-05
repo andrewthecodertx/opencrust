@@ -8,6 +8,7 @@ use opencrust_common::{
 };
 use opencrust_config::{AppConfig, ConfigWatcher};
 use opencrust_db::SessionStore;
+use opencrust_media::build_tts_provider;
 use tokio::net::TcpListener;
 use tracing::{info, warn};
 
@@ -16,7 +17,7 @@ use crate::bootstrap::build_imessage_channels;
 use crate::bootstrap::{
     build_agent_runtime, build_channels, build_discord_channels, build_line_channels,
     build_mcp_tools, build_slack_channels, build_telegram_channels, build_wechat_channels,
-    build_whatsapp_channels, build_whatsapp_web_channels,
+    build_whatsapp_channels, build_whatsapp_web_channels, resolve_api_key,
 };
 use crate::router::build_router;
 use crate::state::AppState;
@@ -84,6 +85,35 @@ impl GatewayServer {
             Err(e) => {
                 warn!("failed to open session store: {e}");
             }
+        }
+
+        // Wire TTS provider from voice config.
+        // Key resolution: vault → voice.api_key → VOICE_API_KEY env → openai provider key.
+        let voice_cfg = &state.config.voice;
+        let voice_api_key = resolve_api_key(
+            voice_cfg.api_key.as_deref(),
+            "VOICE_API_KEY",
+            "VOICE_API_KEY",
+        )
+        .or_else(|| {
+            // Fall back to the explicitly-named "openai" LLM provider key so we
+            // don't accidentally send an Anthropic key to an OpenAI endpoint.
+            state
+                .config
+                .llm
+                .get("openai")
+                .and_then(|p| p.api_key.clone())
+        });
+
+        if let Some(provider) = build_tts_provider(
+            voice_cfg.tts_provider.as_deref(),
+            voice_api_key,
+            voice_cfg.model.clone(),
+            voice_cfg.voice.clone(),
+            voice_cfg.tts_base_url.clone(),
+        ) {
+            info!("TTS provider '{}' initialised", provider.name());
+            state.set_tts_provider(provider);
         }
 
         // Start config hot-reload watcher

@@ -45,6 +45,9 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub guardrails: GuardrailsConfig,
+
+    #[serde(default)]
+    pub voice: VoiceConfig,
 }
 
 impl Default for AppConfig {
@@ -63,6 +66,7 @@ impl Default for AppConfig {
             agents: HashMap::new(),
             tools: ToolsConfig::default(),
             guardrails: GuardrailsConfig::default(),
+            voice: VoiceConfig::default(),
         }
     }
 }
@@ -361,6 +365,52 @@ pub struct McpServerConfig {
 
     /// Connection timeout in seconds (default: 30)
     pub timeout: Option<u64>,
+}
+
+/// Voice input/output configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct VoiceConfig {
+    /// TTS provider: `"openai"` (cloud) or `"kokoro"` (self-hosted).
+    #[serde(default)]
+    pub tts_provider: Option<String>,
+
+    /// Voice ID (provider-specific).
+    /// OpenAI: `"alloy"` | `"echo"` | `"fable"` | `"onyx"` | `"nova"` | `"shimmer"`
+    /// Kokoro: `"af_heart"` | `"af_bella"` | … (see Kokoro docs)
+    #[serde(default)]
+    pub voice: Option<String>,
+
+    /// Model override (OpenAI: `"tts-1"` / `"tts-1-hd"`; ignored by Kokoro).
+    #[serde(default)]
+    pub model: Option<String>,
+
+    /// Base URL for a self-hosted TTS server (e.g. `http://localhost:8881` for Kokoro FastAPI).
+    /// Also works with any OpenAI-compatible TTS endpoint when `tts_provider = "openai"`.
+    #[serde(default, alias = "base_url")]
+    pub tts_base_url: Option<String>,
+
+    /// API key for the TTS/STT provider. Checked after vault, before env var.
+    /// Falls back to the OpenAI provider key when not set.
+    #[serde(default)]
+    pub api_key: Option<String>,
+
+    /// Base URL for a self-hosted Whisper STT server (e.g. `http://localhost:8000`).
+    /// When set, transcription is routed here instead of OpenAI/Groq and no API key is required.
+    #[serde(default)]
+    pub stt_base_url: Option<String>,
+
+    /// Whisper model ID for self-hosted STT (default: `Systran/faster-whisper-large-v3`).
+    #[serde(default)]
+    pub stt_model: Option<String>,
+
+    /// Maximum characters sent to TTS synthesis (default: 4000).
+    /// Protects against OpenAI's 4096-char limit and oversized Kokoro responses.
+    #[serde(default)]
+    pub tts_max_chars: Option<usize>,
+
+    /// When `true`, voice-message inputs receive a voice response.
+    #[serde(default)]
+    pub auto_reply_voice: bool,
 }
 
 #[cfg(test)]
