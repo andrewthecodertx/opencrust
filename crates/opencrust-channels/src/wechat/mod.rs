@@ -142,8 +142,9 @@ impl WeChatChannel {
 
     /// Return a valid access token, using the in-process cache when possible.
     ///
-    /// Delegates to [`get_token_cached`] so spawned tasks in the webhook handler
-    /// share the same cache and avoid exhausting WeChat's 2000 token-requests/day limit.
+    /// Spawned tasks in the webhook handler should call this instead of
+    /// `api::get_access_token` directly, so they share the cache and avoid
+    /// exhausting WeChat's 2000 token-requests/day limit.
     pub async fn get_cached_token(&self) -> opencrust_common::Result<String> {
         get_token_cached(
             &self.client,
