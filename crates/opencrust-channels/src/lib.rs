@@ -31,7 +31,7 @@ pub use protocol::{
 };
 pub use registry::ChannelRegistry;
 #[cfg(feature = "slack")]
-pub use slack::{SlackChannel, SlackGroupFilter, SlackOnMessageFn};
+pub use slack::{SlackChannel, SlackFile, SlackGroupFilter, SlackOnMessageFn};
 #[cfg(feature = "telegram")]
 pub use telegram::{GroupFilter, MediaAttachment, OnMessageFn, TelegramChannel};
 pub use traits::{
