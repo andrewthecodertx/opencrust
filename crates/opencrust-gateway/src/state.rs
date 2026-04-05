@@ -12,7 +12,7 @@ use opencrust_config::{
     model::{GuardrailsConfig, RateLimitConfig},
 };
 use opencrust_db::SessionStore;
-use tokio::sync::{Mutex, watch};
+use tokio::sync::watch;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -44,7 +44,7 @@ pub struct AppState {
     pub a2a_tasks: DashMap<String, opencrust_agents::a2a::A2ATask>,
     /// MCP manager wrapped in Arc for health monitoring and resource access.
     pub mcp_manager_arc: Option<Arc<opencrust_agents::McpManager>>,
-    pub session_store: Option<Arc<Mutex<SessionStore>>>,
+    pub session_store: Option<Arc<SessionStore>>,
     /// Per-session rolling summary string used by long-context agent flows.
     session_summaries: DashMap<String, String>,
     /// Runtime connection state for Google Workspace integration.
@@ -107,7 +107,7 @@ impl AppState {
     }
 
     /// Attach a persistent session store used to hydrate and persist chat history.
-    pub fn set_session_store(&mut self, store: Arc<Mutex<SessionStore>>) {
+    pub fn set_session_store(&mut self, store: Arc<SessionStore>) {
         self.session_store = Some(store);
     }
 
@@ -363,13 +363,12 @@ impl AppState {
 
         let mut loaded_history = Vec::new();
         {
-            let guard = store.lock().await;
-            if let Err(e) = guard.upsert_session(session_id, channel, user, &metadata) {
+            if let Err(e) = store.upsert_session(session_id, channel, user, &metadata) {
                 warn!("failed to upsert session {session_id} in session store: {e}");
             }
 
             if should_load {
-                match guard.load_recent_messages(session_id, 100) {
+                match store.load_recent_messages(session_id, 100) {
                     Ok(messages) => {
                         loaded_history = messages
                             .into_iter()
@@ -456,12 +455,11 @@ impl AppState {
             }
         }
 
-        let guard = store.lock().await;
-        if let Err(e) = guard.upsert_session(session_id, channel, user, &metadata) {
+        if let Err(e) = store.upsert_session(session_id, channel, user, &metadata) {
             warn!("failed to upsert session {session_id}: {e}");
             return;
         }
-        if let Err(e) = guard.append_message(
+        if let Err(e) = store.append_message(
             session_id,
             "user",
             user_text,
@@ -470,7 +468,7 @@ impl AppState {
         ) {
             warn!("failed to persist user message for {session_id}: {e}");
         }
-        if let Err(e) = guard.append_message(
+        if let Err(e) = store.append_message(
             session_id,
             "assistant",
             assistant_text,
@@ -517,8 +515,7 @@ impl AppState {
             })
             .unwrap_or_else(|| ("anonymous".to_string(), "unknown".to_string()));
 
-        let guard = store.lock().await;
-        if let Err(e) = guard.record_usage(
+        if let Err(e) = store.record_usage(
             session_id,
             opencrust_db::UsageAttribution {
                 user_id: &user_id,
@@ -569,10 +566,9 @@ impl AppState {
             let Some(store) = &self.session_store else {
                 return Ok(());
             };
-            let guard = store.lock().await;
 
             if let Some(daily_budget) = config.token_budget_user_daily {
-                match guard.query_usage_for_user(user_id, Some("today")) {
+                match store.query_usage_for_user(user_id, Some("today")) {
                     Ok(usage) if usage.total_tokens >= daily_budget as u64 => {
                         return Err(format!(
                             "token budget exceeded: you have used {} tokens today (daily limit: {daily_budget})",
@@ -585,7 +581,7 @@ impl AppState {
             }
 
             if let Some(monthly_budget) = config.token_budget_user_monthly {
-                match guard.query_usage_for_user(user_id, Some("month")) {
+                match store.query_usage_for_user(user_id, Some("month")) {
                     Ok(usage) if usage.total_tokens >= monthly_budget as u64 => {
                         return Err(format!(
                             "token budget exceeded: you have used {} tokens this month (monthly limit: {monthly_budget})",

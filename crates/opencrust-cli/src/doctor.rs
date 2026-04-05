@@ -310,10 +310,8 @@ fn check_sqlite_integrity(db_path: &Path, label: &str) -> Check {
 
     match opencrust_db::SessionStore::open(db_path) {
         Ok(store) => {
-            match store
-                .connection()
-                .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
-            {
+            let conn = store.connection().unwrap();
+            match conn.query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0)) {
                 Ok(ref s) if s == "ok" => Check::Pass("integrity_check passed".into()),
                 Ok(s) => Check::Fail(format!("integrity_check returned: {s}")),
                 Err(e) => Check::Fail(format!("could not run integrity_check: {e}")),

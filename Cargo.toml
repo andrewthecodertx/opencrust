@@ -42,6 +42,8 @@ toml = "0.8"
 
 # Database
 rusqlite = { version = "0.32", features = ["bundled", "vtab"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
 sqlite-vec = "0.1"
 
 # CLI

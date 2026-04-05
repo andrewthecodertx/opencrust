@@ -299,10 +299,7 @@ async fn get_usage(
         }));
     };
 
-    let result = {
-        let guard = store.lock().await;
-        guard.query_usage(session_id, period)
-    };
+    let result = store.query_usage(session_id, period);
 
     match result {
         Ok(record) => axum::Json(serde_json::json!({
