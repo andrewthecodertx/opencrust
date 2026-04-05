@@ -491,9 +491,11 @@ async fn section_provider(
         .and_then(|c| c.llm.get("main"))
         .and_then(|p| p.model.as_deref());
 
-    // Base URL - show default from registry if provider has one
-    let base_url = if known.default_base_url.is_some() || existing_base_url.is_some() {
-        let default = existing_base_url.or(known.default_base_url).unwrap_or("");
+    // Base URL - local providers always show it, cloud providers gate behind "Advanced"
+    let base_url = if known.is_local {
+        let default = existing_base_url
+            .or(known.default_base_url)
+            .unwrap_or("http://localhost");
         let input: String = Input::new()
             .with_prompt(format!("Base URL [{}]", default))
             .default(default.to_string())
@@ -513,21 +515,33 @@ async fn section_provider(
             Some(url.to_string())
         }
     } else {
-        let input: String = Input::new()
-            .with_prompt("Custom base URL (optional, Enter to skip)")
-            .allow_empty(true)
-            .validate_with(|input: &String| -> Result<(), String> {
-                if input.is_empty() {
-                    return Ok(());
-                }
-                validate_base_url(input).map_err(|e| e.to_string())
-            })
-            .interact_text()
-            .context("base URL input cancelled")?;
-        if input.trim().is_empty() {
-            None
+        let show_advanced = Confirm::new()
+            .with_prompt("Advanced options? (custom endpoint, proxy)")
+            .default(false)
+            .interact()
+            .unwrap_or(false);
+
+        if show_advanced {
+            let default = existing_base_url.unwrap_or("");
+            let input: String = Input::new()
+                .with_prompt("API endpoint URL (Enter for default)")
+                .default(default.to_string())
+                .allow_empty(true)
+                .validate_with(|input: &String| -> Result<(), String> {
+                    if input.is_empty() {
+                        return Ok(());
+                    }
+                    validate_base_url(input).map_err(|e| e.to_string())
+                })
+                .interact_text()
+                .context("base URL input cancelled")?;
+            if input.trim().is_empty() {
+                None
+            } else {
+                Some(input.trim().to_string())
+            }
         } else {
-            Some(input.trim().to_string())
+            existing_base_url.map(|s| s.to_string())
         }
     };
 
