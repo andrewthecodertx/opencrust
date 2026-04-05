@@ -154,6 +154,7 @@ use std::sync::Arc;
 
 /// Build a `TtsProvider` from config values.
 /// Returns `None` if `tts_provider` is not set or unrecognised.
+#[allow(unused_variables)]
 pub fn build_tts_provider(
     tts_provider: Option<&str>,
     api_key: Option<String>,
