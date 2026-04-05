@@ -8,12 +8,13 @@ use opencrust_agents::{
     FileReadTool, FileWriteTool, GoogleSearchTool, McpManager, OllamaEmbeddingProvider,
     OllamaProvider, OpenAiProvider, WebFetchTool, WebSearchTool,
 };
+use opencrust_channels::{
+    ChannelResponse, MediaAttachment, SlackChannel, SlackGroupFilter, SlackOnMessageFn,
+    TelegramChannel, WhatsAppChannel, WhatsAppOnMessageFn, WhatsAppWebChannel,
+    WhatsAppWebGroupFilter,
+};
 #[cfg(target_os = "macos")]
 use opencrust_channels::{IMessageChannel, IMessageGroupFilter, IMessageOnMessageFn};
-use opencrust_channels::{
-    MediaAttachment, SlackChannel, SlackGroupFilter, SlackOnMessageFn, TelegramChannel,
-    WhatsAppChannel, WhatsAppOnMessageFn, WhatsAppWebChannel, WhatsAppWebGroupFilter,
-};
 use opencrust_config::AppConfig;
 use opencrust_db::MemoryStore;
 use opencrust_security::{Allowlist, ChannelPolicy, DmAuthResult, PairingManager, check_dm_auth};
@@ -1120,6 +1121,8 @@ pub fn build_telegram_channels(
         let max_output_chars = config.guardrails.max_output_chars;
         let rate_limit_config = Arc::new(config.gateway.rate_limit.clone());
         let guardrails_config = Arc::new(config.guardrails.clone());
+        let auto_reply_voice = config.voice.auto_reply_voice;
+        let tts_provider = state.tts_provider.clone();
 
         let on_message: opencrust_channels::OnMessageFn = Arc::new(
             move |chat_id: i64,
@@ -1135,6 +1138,7 @@ pub fn build_telegram_channels(
                 let policy = Arc::clone(&policy_for_cb);
                 let rate_limit_config = Arc::clone(&rate_limit_config);
                 let guardrails_config = Arc::clone(&guardrails_config);
+                let tts = tts_provider.clone();
                 Box::pin(async move {
                     // --- Command handling (text-only) ---
                     if let Some(cmd) = text.strip_prefix('/') {
@@ -1142,7 +1146,8 @@ pub fn build_telegram_channels(
                         return handle_command(
                             cmd, &text, &user_id, &user_name, chat_id, &allowlist, &pairing,
                             &policy, &state,
-                        );
+                        )
+                        .map(ChannelResponse::Text);
                     }
 
                     // --- Auth / pairing (skip for groups - already filtered by channel handler) ---
@@ -1152,7 +1157,7 @@ pub fn build_telegram_channels(
                             &policy, &mut list, &pairing, &user_id, &user_name, &text, "telegram",
                         ) {
                             Ok(None) => {}
-                            Ok(Some(welcome)) => return Ok(welcome),
+                            Ok(Some(welcome)) => return Ok(ChannelResponse::Text(welcome)),
                             Err(e) => return Err(e),
                         }
                     }
@@ -1257,7 +1262,25 @@ pub fn build_telegram_channels(
                                 &response,
                                 max_output_chars,
                             );
-                            Ok(response)
+                            // TTS: synthesize voice response if configured
+                            if auto_reply_voice {
+                                if let Some(ref provider) = tts {
+                                    match provider.synthesize(&response).await {
+                                        Ok(audio) => {
+                                            return Ok(ChannelResponse::Voice {
+                                                text: response,
+                                                audio,
+                                            });
+                                        }
+                                        Err(e) => {
+                                            warn!(
+                                                "tts synthesis failed, falling back to text: {e}"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(ChannelResponse::Text(response))
                         }
                         Some(MediaAttachment::Photo { data, caption }) => {
                             use base64::Engine;
@@ -1339,7 +1362,7 @@ pub fn build_telegram_channels(
                                 &response,
                                 max_output_chars,
                             );
-                            Ok(response)
+                            Ok(ChannelResponse::Text(response))
                         }
                         Some(MediaAttachment::Document {
                             data,
@@ -1451,7 +1474,7 @@ pub fn build_telegram_channels(
                                 &response,
                                 max_output_chars,
                             );
-                            Ok(response)
+                            Ok(ChannelResponse::Text(response))
                         }
                         None => {
                             // Existing text-only path
@@ -1533,7 +1556,7 @@ pub fn build_telegram_channels(
                                 &response,
                                 max_output_chars,
                             );
-                            Ok(response)
+                            Ok(ChannelResponse::Text(response))
                         }
                     }
                 })

@@ -45,6 +45,9 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub guardrails: GuardrailsConfig,
+
+    #[serde(default)]
+    pub voice: VoiceConfig,
 }
 
 impl Default for AppConfig {
@@ -63,6 +66,7 @@ impl Default for AppConfig {
             agents: HashMap::new(),
             tools: ToolsConfig::default(),
             guardrails: GuardrailsConfig::default(),
+            voice: VoiceConfig::default(),
         }
     }
 }
@@ -361,6 +365,49 @@ pub struct McpServerConfig {
 
     /// Connection timeout in seconds (default: 30)
     pub timeout: Option<u64>,
+}
+
+/// Voice input/output configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceConfig {
+    /// TTS provider: `"openai"` (cloud) or `"kokoro"` (self-hosted).
+    #[serde(default)]
+    pub tts_provider: Option<String>,
+
+    /// Voice ID (provider-specific).
+    /// OpenAI: `"alloy"` | `"echo"` | `"fable"` | `"onyx"` | `"nova"` | `"shimmer"`
+    /// Kokoro: `"af_heart"` | `"af_bella"` | … (see Kokoro docs)
+    #[serde(default)]
+    pub voice: Option<String>,
+
+    /// Model override (OpenAI: `"tts-1"` / `"tts-1-hd"`; ignored by Kokoro).
+    #[serde(default)]
+    pub model: Option<String>,
+
+    /// Base URL for self-hosted providers (e.g. `http://localhost:8880` for Kokoro FastAPI).
+    #[serde(default)]
+    pub base_url: Option<String>,
+
+    /// API key override for the TTS provider. Falls back to the active LLM provider key.
+    #[serde(default)]
+    pub api_key: Option<String>,
+
+    /// When `true`, voice-message inputs receive a voice response.
+    #[serde(default)]
+    pub auto_reply_voice: bool,
+}
+
+impl Default for VoiceConfig {
+    fn default() -> Self {
+        Self {
+            tts_provider: None,
+            voice: None,
+            model: None,
+            base_url: None,
+            api_key: None,
+            auto_reply_voice: false,
+        }
+    }
 }
 
 #[cfg(test)]

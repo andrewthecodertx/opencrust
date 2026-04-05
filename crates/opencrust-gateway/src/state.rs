@@ -12,6 +12,7 @@ use opencrust_config::{
     model::{GuardrailsConfig, RateLimitConfig},
 };
 use opencrust_db::SessionStore;
+use opencrust_media::TtsProvider;
 use tokio::sync::watch;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -45,6 +46,8 @@ pub struct AppState {
     /// MCP manager wrapped in Arc for health monitoring and resource access.
     pub mcp_manager_arc: Option<Arc<opencrust_agents::McpManager>>,
     pub session_store: Option<Arc<SessionStore>>,
+    /// TTS provider for voice responses (set from `voice.tts_provider` config).
+    pub tts_provider: Option<Arc<dyn TtsProvider>>,
     /// Per-session rolling summary string used by long-context agent flows.
     session_summaries: DashMap<String, String>,
     /// Runtime connection state for Google Workspace integration.
@@ -95,6 +98,7 @@ impl AppState {
             a2a_tasks: DashMap::new(),
             mcp_manager_arc: None,
             session_store: None,
+            tts_provider: None,
             session_summaries: DashMap::new(),
             google_workspace_integration_connected: AtomicBool::new(false),
             google_workspace_email: RwLock::new(None),
@@ -109,6 +113,11 @@ impl AppState {
     /// Attach a persistent session store used to hydrate and persist chat history.
     pub fn set_session_store(&mut self, store: Arc<SessionStore>) {
         self.session_store = Some(store);
+    }
+
+    /// Attach a TTS provider for voice responses.
+    pub fn set_tts_provider(&mut self, provider: Arc<dyn TtsProvider>) {
+        self.tts_provider = Some(provider);
     }
 
     /// Attach a config watch receiver for hot-reload support.

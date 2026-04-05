@@ -2667,6 +2667,7 @@ dependencies = [
  "opencrust-common",
  "opencrust-config",
  "opencrust-db",
+ "opencrust-media",
  "opencrust-security",
  "opencrust-skills",
  "reqwest 0.12.28",
@@ -2687,6 +2688,7 @@ dependencies = [
 name = "opencrust-media"
 version = "0.1.22"
 dependencies = [
+ "async-trait",
  "bytes",
  "opencrust-common",
  "pdf-extract",

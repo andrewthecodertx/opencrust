@@ -41,11 +41,35 @@ pub enum MediaAttachment {
     },
 }
 
+/// Response returned by the `on_message` callback.
+///
+/// `Text` is the normal case. `Voice` is returned when `auto_reply_voice` is
+/// enabled and a TTS provider is configured — the channel handler will send an
+/// audio message instead of (or in addition to) text.
+#[derive(Debug, Clone)]
+pub enum ChannelResponse {
+    /// Plain text response — sent as a formatted chat message.
+    Text(String),
+    /// Voice response — `text` is persisted to history; `audio` (OGG/Opus bytes)
+    /// is sent as a voice message to the user.
+    Voice { text: String, audio: Vec<u8> },
+}
+
+impl ChannelResponse {
+    /// The text content regardless of variant (used for persistence).
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Text(t) => t,
+            Self::Voice { text, .. } => text,
+        }
+    }
+}
+
 /// Callback invoked when the bot receives a message.
 ///
 /// Arguments: `(chat_id, user_id_string, user_display_name, text, is_group, attachment, delta_sender)`.
 /// When `delta_sender` is `Some`, the callback should send text deltas through it
-/// for streaming display. The callback still returns the final complete text.
+/// for streaming display. The callback still returns the final complete response.
 /// Return `Err("__blocked__")` to silently drop the message (unauthorized user).
 pub type OnMessageFn = Arc<
     dyn Fn(
@@ -56,7 +80,8 @@ pub type OnMessageFn = Arc<
             bool,
             Option<MediaAttachment>,
             Option<mpsc::Sender<String>>,
-        ) -> Pin<Box<dyn Future<Output = std::result::Result<String, String>> + Send>>
+        )
+            -> Pin<Box<dyn Future<Output = std::result::Result<ChannelResponse, String>> + Send>>
         + Send
         + Sync,
 >;
@@ -457,7 +482,21 @@ impl ChannelLifecycle for TelegramChannel {
                             .unwrap_or_else(|e| Err(format!("task panic: {e}")));
 
                         match result {
-                            Ok(final_text) => {
+                            Ok(ChannelResponse::Voice { text: final_text, audio }) => {
+                                // Delete the streaming placeholder (if any) and send voice
+                                if let Some(id) = msg_id {
+                                    let _ = bot.delete_message(chat_id, id).await;
+                                }
+                                if let Err(e) = bot
+                                    .send_voice(chat_id, InputFile::memory(audio))
+                                    .caption(&final_text)
+                                    .await
+                                {
+                                    warn!("telegram send_voice failed, falling back to text: {e}");
+                                    let _ = bot.send_message(chat_id, &final_text).await;
+                                }
+                            }
+                            Ok(ChannelResponse::Text(final_text)) => {
                                 if let Some(id) = msg_id {
                                     // Final edit with MarkdownV2 formatting
                                     let formatted = to_telegram_markdown(&final_text);
@@ -649,7 +688,7 @@ mod tests {
     fn channel_type_is_telegram() {
         let on_msg: OnMessageFn = Arc::new(
             |_chat_id, _uid, _user, _text, _is_group, _attachment, _delta_tx| {
-                Box::pin(async { Ok("test".to_string()) })
+                Box::pin(async { Ok(ChannelResponse::Text("test".to_string())) })
             },
         );
         let channel = TelegramChannel::new("fake-token".to_string(), on_msg);

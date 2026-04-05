@@ -8,6 +8,7 @@ use opencrust_common::{
 };
 use opencrust_config::{AppConfig, ConfigWatcher};
 use opencrust_db::SessionStore;
+use opencrust_media::build_tts_provider;
 use tokio::net::TcpListener;
 use tracing::{info, warn};
 
@@ -86,6 +87,22 @@ impl GatewayServer {
             Err(e) => {
                 warn!("failed to open session store: {e}");
             }
+        }
+
+        // Wire TTS provider from voice config
+        let voice_cfg = &state.config.voice;
+        if let Some(provider) = build_tts_provider(
+            voice_cfg.tts_provider.as_deref(),
+            voice_cfg
+                .api_key
+                .clone()
+                .or_else(|| state.config.llm.values().find_map(|p| p.api_key.clone())),
+            voice_cfg.model.clone(),
+            voice_cfg.voice.clone(),
+            voice_cfg.base_url.clone(),
+        ) {
+            info!("TTS provider '{}' initialised", provider.name());
+            state.set_tts_provider(provider);
         }
 
         // Start config hot-reload watcher
