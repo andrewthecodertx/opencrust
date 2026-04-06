@@ -61,6 +61,8 @@ jobs:
             cargo build --release --target ${{ matrix.target }}
           fi
         shell: bash
+        env:
+          OPENSSL_VENDORED: ${{ matrix.use_cross && '1' || '' }}
       - name: Package binary
         run: |
           mkdir -p dist
