@@ -11,6 +11,7 @@ git-repository-url = "https://github.com/opencrust-org/opencrust"
 git-repository-icon = "fa-github"
 edit-url-template = "https://github.com/opencrust-org/opencrust/edit/main/docs/{path}"
 additional-css = ["theme/custom.css"]
+additional-js  = ["theme/opencrust.js"]
 no-section-label = false
 fold.enable = true
 fold.level = 1
