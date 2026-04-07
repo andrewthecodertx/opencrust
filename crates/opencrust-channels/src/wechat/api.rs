@@ -232,6 +232,29 @@ pub async fn upload_voice(
         .ok_or_else(|| "wechat media upload: missing media_id in response".to_string())
 }
 
+/// Download image bytes from a public WeChat CDN URL (no auth required).
+///
+/// WeChat `PicUrl` fields point directly to CDN resources that do not need an
+/// access token. Use this for downloading image messages sent by users.
+pub async fn download_pic(client: &Client, url: &str) -> Result<Vec<u8>, String> {
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("wechat download_pic request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("wechat download_pic error {status}: {body}"));
+    }
+
+    resp.bytes()
+        .await
+        .map(|b| b.to_vec())
+        .map_err(|e| format!("wechat download_pic read failed: {e}"))
+}
+
 /// Push a voice message to a user via the Customer Service API.
 ///
 /// `media_id` must be obtained from [`upload_voice`] first.

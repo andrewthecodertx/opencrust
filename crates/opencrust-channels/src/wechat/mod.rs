@@ -20,9 +20,21 @@ use opencrust_common::{Message, MessageContent, Result};
 /// Returns `true` if the message should be processed.
 pub type WeChatGroupFilter = Arc<dyn Fn(bool) -> bool + Send + Sync>;
 
-/// Callback invoked when the bot receives a text message from WeChat.
+/// A file attached to a WeChat image message, with bytes already downloaded.
+#[derive(Debug, Clone)]
+pub struct WeChatFile {
+    /// Filename derived from the MsgId (e.g. `"image_12345.jpg"`).
+    pub filename: String,
+    /// Raw image bytes.
+    pub data: Vec<u8>,
+    /// MIME type string (e.g. `"image/jpeg"`).
+    pub mime_type: Option<String>,
+}
+
+/// Callback invoked when the bot receives a message from WeChat.
 ///
-/// Arguments: `(openid, context_id, text, is_group, delta_tx)`.
+/// Arguments: `(openid, context_id, text, is_group, file, delta_tx)`.
+/// `file` is `Some` when the user sent an image message.
 /// `delta_tx` is always `None` — WeChat does not support message editing.
 /// Return `Err("__blocked__")` to silently drop (unauthorized user).
 pub type WeChatOnMessageFn = Arc<
@@ -31,6 +43,7 @@ pub type WeChatOnMessageFn = Arc<
             String,
             String,
             bool,
+            Option<WeChatFile>,
             Option<mpsc::Sender<String>>,
         )
             -> Pin<Box<dyn Future<Output = std::result::Result<ChannelResponse, String>> + Send>>
@@ -130,12 +143,14 @@ impl WeChatChannel {
         context_id: &str,
         text: &str,
         is_group: bool,
+        file: Option<WeChatFile>,
     ) -> std::result::Result<ChannelResponse, String> {
         (self.on_message)(
             openid.to_string(),
             context_id.to_string(),
             text.to_string(),
             is_group,
+            file,
             None,
         )
         .await
@@ -401,7 +416,7 @@ mod tests {
     use super::*;
 
     fn make_on_msg() -> WeChatOnMessageFn {
-        Arc::new(|_uid, _ctx, _text, _is_group, _delta_tx| {
+        Arc::new(|_uid, _ctx, _text, _is_group, _file, _delta_tx| {
             Box::pin(async { Ok(ChannelResponse::Text("test".to_string())) })
         })
     }
@@ -442,6 +457,86 @@ mod tests {
         );
         assert!(!ch.group_filter()(false));
         assert!(!ch.group_filter()(true));
+    }
+
+    // --- WeChatFile / image-ingest tests ---
+
+    #[test]
+    fn wechat_file_fields_accessible() {
+        let f = WeChatFile {
+            filename: "image_12345.jpg".to_string(),
+            data: vec![0xff, 0xd8, 0xff],
+            mime_type: Some("image/jpeg".to_string()),
+        };
+        assert_eq!(f.filename, "image_12345.jpg");
+        assert_eq!(f.data.len(), 3);
+        assert_eq!(f.mime_type.as_deref(), Some("image/jpeg"));
+    }
+
+    #[test]
+    fn wechat_file_mime_type_optional() {
+        let f = WeChatFile {
+            filename: "photo.bin".to_string(),
+            data: vec![],
+            mime_type: None,
+        };
+        assert!(f.mime_type.is_none());
+    }
+
+    #[tokio::test]
+    async fn on_message_callback_receives_wechat_file() {
+        let on_msg: WeChatOnMessageFn =
+            Arc::new(|_uid, _ctx, _text, _is_group, file, _delta_tx| {
+                Box::pin(async move {
+                    let name = file
+                        .map(|f| f.filename)
+                        .unwrap_or_else(|| "none".to_string());
+                    Ok(ChannelResponse::Text(name))
+                })
+            });
+
+        let wechat_file = WeChatFile {
+            filename: "image_999.jpg".to_string(),
+            data: vec![0u8; 8],
+            mime_type: Some("image/jpeg".to_string()),
+        };
+
+        let result = on_msg(
+            "oUser123".to_string(),
+            "oUser123".to_string(),
+            String::new(),
+            false,
+            Some(wechat_file),
+            None,
+        )
+        .await;
+
+        assert!(matches!(result, Ok(ChannelResponse::Text(t)) if t == "image_999.jpg"));
+    }
+
+    #[tokio::test]
+    async fn on_message_callback_with_no_file() {
+        let on_msg: WeChatOnMessageFn =
+            Arc::new(|_uid, _ctx, _text, _is_group, file, _delta_tx| {
+                Box::pin(async move {
+                    let name = file
+                        .map(|f| f.filename)
+                        .unwrap_or_else(|| "none".to_string());
+                    Ok(ChannelResponse::Text(name))
+                })
+            });
+
+        let result = on_msg(
+            "oUser123".to_string(),
+            "oUser123".to_string(),
+            "hello".to_string(),
+            false,
+            None,
+            None,
+        )
+        .await;
+
+        assert!(matches!(result, Ok(ChannelResponse::Text(t)) if t == "none"));
     }
 
     #[tokio::test]

@@ -17,6 +17,7 @@ const WECHAT_SYNC_TIMEOUT: Duration = Duration::from_secs(4);
 use crate::traits::ChannelResponse;
 
 use super::WeChatChannel;
+use super::WeChatFile;
 use super::api;
 use super::fmt;
 
@@ -130,10 +131,12 @@ pub async fn wechat_webhook(
 
     let msg_type = fmt::extract_xml_field(&xml, "MsgType").unwrap_or("");
 
-    // Build the content string dispatched to the on_message callback.
-    let content = match msg_type {
+    // Build the content string and optional file download info for on_message.
+    // For "image" messages the PicUrl is a public CDN URL (no auth needed);
+    // we pass it as (url, filename) and download inside the spawned task.
+    let (content, file_dl): (String, Option<(String, String)>) = match msg_type {
         "text" => match fmt::extract_xml_field(&xml, "Content") {
-            Some(t) if !t.trim().is_empty() => t.to_string(),
+            Some(t) if !t.trim().is_empty() => (t.to_string(), None),
             _ => {
                 return (
                     StatusCode::OK,
@@ -143,25 +146,41 @@ pub async fn wechat_webhook(
             }
         },
         "image" => {
-            let pic_url = fmt::extract_xml_field(&xml, "PicUrl").unwrap_or("");
-            let media_id = fmt::extract_xml_field(&xml, "MediaId").unwrap_or("");
-            format!("[image: url={pic_url} media_id={media_id}]")
+            let pic_url = fmt::extract_xml_field(&xml, "PicUrl")
+                .unwrap_or("")
+                .to_string();
+            let msg_id = fmt::extract_xml_field(&xml, "MsgId")
+                .unwrap_or("")
+                .to_string();
+            (
+                String::new(),
+                Some((pic_url, format!("image_{msg_id}.jpg"))),
+            )
         }
         "voice" => {
             let media_id = fmt::extract_xml_field(&xml, "MediaId").unwrap_or("");
             let format = fmt::extract_xml_field(&xml, "Format").unwrap_or("");
-            format!("[voice: media_id={media_id} format={format}]")
+            (
+                format!("[voice: media_id={media_id} format={format}]"),
+                None,
+            )
         }
         "video" | "shortvideo" => {
             let media_id = fmt::extract_xml_field(&xml, "MediaId").unwrap_or("");
             let thumb_id = fmt::extract_xml_field(&xml, "ThumbMediaId").unwrap_or("");
-            format!("[video: media_id={media_id} thumb_media_id={thumb_id}]")
+            (
+                format!("[video: media_id={media_id} thumb_media_id={thumb_id}]"),
+                None,
+            )
         }
         "location" => {
             let lat = fmt::extract_xml_field(&xml, "Location_X").unwrap_or("");
             let lon = fmt::extract_xml_field(&xml, "Location_Y").unwrap_or("");
             let label = fmt::extract_xml_field(&xml, "Label").unwrap_or("");
-            format!("[location: lat={lat} lon={lon} label={label}]")
+            (
+                format!("[location: lat={lat} lon={lon} label={label}]"),
+                None,
+            )
         }
         // Unsupported event types (follow, scan, etc.) — acknowledge silently.
         _ => {
@@ -215,12 +234,30 @@ pub async fn wechat_webhook(
     // reused in the background push if the sync window expires.  This ensures
     // the LLM processes the message exactly once regardless of whether we reply
     // synchronously or asynchronously.
+    //
+    // For image messages, download the PicUrl inside the task before calling
+    // handle_incoming so that the file bytes are available to the callback.
     let ch_llm = Arc::clone(&channel);
     let from_user_llm = from_user.clone();
     let content_llm = content.clone();
+    let client_llm = channel.client().clone();
     let mut llm_task = tokio::spawn(async move {
+        let file = if let Some((url, filename)) = file_dl {
+            match api::download_pic(&client_llm, &url).await {
+                Ok(data) => Some(WeChatFile {
+                    filename,
+                    data,
+                    mime_type: Some("image/jpeg".to_string()),
+                }),
+                Err(e) => {
+                    return Err(format!("image download failed: {e}"));
+                }
+            }
+        } else {
+            None
+        };
         ch_llm
-            .handle_incoming(&from_user_llm, &from_user_llm, &content_llm, is_group)
+            .handle_incoming(&from_user_llm, &from_user_llm, &content_llm, is_group, file)
             .await
     });
 
@@ -405,7 +442,7 @@ mod tests {
     }
 
     fn make_state(token: &str) -> WeChatWebhookState {
-        let on_msg: WeChatOnMessageFn = Arc::new(|_uid, _ctx, _text, _is_group, _| {
+        let on_msg: WeChatOnMessageFn = Arc::new(|_uid, _ctx, _text, _is_group, _file, _| {
             Box::pin(async { Ok(ChannelResponse::Text("reply".to_string())) })
         });
         let ch = Arc::new(WeChatChannel::new(
@@ -571,24 +608,62 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn post_image_message_dispatches_to_on_message() {
+    async fn post_image_message_downloads_pic_and_dispatches_to_on_message() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // Spin up a mock CDN that serves the PicUrl image.
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/photo.jpg"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(b"\xff\xd8\xff\xe0" as &[u8]) // minimal JPEG header
+                    .append_header("content-type", "image/jpeg"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let pic_url = format!("{}/photo.jpg", mock_server.uri());
+
+        // on_message receives the WeChatFile and returns "reply".
+        let on_msg: WeChatOnMessageFn =
+            Arc::new(|_uid, _ctx, _text, _is_group, file, _delta_tx| {
+                Box::pin(async move {
+                    // File should be present with non-empty data.
+                    assert!(file.is_some());
+                    let f = file.unwrap();
+                    assert!(!f.data.is_empty());
+                    assert_eq!(f.mime_type.as_deref(), Some("image/jpeg"));
+                    Ok(ChannelResponse::Text("reply".to_string()))
+                })
+            });
         let token = "mytoken";
+        let ch = Arc::new(WeChatChannel::new(
+            "appid".to_string(),
+            "secret".to_string(),
+            token.to_string(),
+            on_msg,
+        ));
+        let state: WeChatWebhookState = Arc::new(vec![ch]);
+
         let timestamp = "1700000000";
         let nonce = "abc123";
         let sig = sign(token, timestamp, nonce);
-        let body = "<xml>\
+        let body = format!(
+            "<xml>\
                 <ToUserName><![CDATA[gh_account]]></ToUserName>\
                 <FromUserName><![CDATA[oOpenId123]]></FromUserName>\
                 <CreateTime>1234567890</CreateTime>\
                 <MsgType><![CDATA[image]]></MsgType>\
-                <PicUrl><![CDATA[https://example.com/photo.jpg]]></PicUrl>\
+                <PicUrl><![CDATA[{pic_url}]]></PicUrl>\
                 <MediaId><![CDATA[media_abc]]></MediaId>\
                 <MsgId>1234567890</MsgId>\
             </xml>"
-            .to_string();
+        );
 
         let uri = format!("/wechat/webhook?signature={sig}&timestamp={timestamp}&nonce={nonce}");
-        let resp = make_router(make_state(token))
+        let resp = make_router(state)
             .oneshot(
                 axum::http::Request::builder()
                     .method("POST")
@@ -605,6 +680,54 @@ mod tests {
         let reply = std::str::from_utf8(&bytes).unwrap();
         // on_message returns "reply", so the XML should contain it.
         assert!(reply.contains("<![CDATA[reply]]>"));
+    }
+
+    #[tokio::test]
+    async fn post_image_download_failure_returns_error_response() {
+        // PicUrl points to a non-existent server — download should fail.
+        let on_msg: WeChatOnMessageFn =
+            Arc::new(|_uid, _ctx, _text, _is_group, _file, _delta_tx| {
+                Box::pin(async { Ok(ChannelResponse::Text("reply".to_string())) })
+            });
+        let token = "mytoken";
+        let ch = Arc::new(WeChatChannel::new(
+            "appid".to_string(),
+            "secret".to_string(),
+            token.to_string(),
+            on_msg,
+        ));
+        let state: WeChatWebhookState = Arc::new(vec![ch]);
+
+        let timestamp = "1700000000";
+        let nonce = "abc123";
+        let sig = sign(token, timestamp, nonce);
+        // Port 1 is reserved and will be refused immediately.
+        let body = "<xml>\
+                <ToUserName><![CDATA[gh_account]]></ToUserName>\
+                <FromUserName><![CDATA[oOpenId123]]></FromUserName>\
+                <CreateTime>1234567890</CreateTime>\
+                <MsgType><![CDATA[image]]></MsgType>\
+                <PicUrl><![CDATA[http://127.0.0.1:1/bad.jpg]]></PicUrl>\
+                <MediaId><![CDATA[media_xyz]]></MediaId>\
+                <MsgId>9999999999</MsgId>\
+            </xml>"
+            .to_string();
+
+        let uri = format!("/wechat/webhook?signature={sig}&timestamp={timestamp}&nonce={nonce}");
+        // The webhook should still return 200 (error is handled internally).
+        let resp = make_router(state)
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "text/xml")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]
@@ -738,7 +861,7 @@ mod tests {
         let sig = sign(token, timestamp, nonce);
 
         // on_message that takes longer than WECHAT_SYNC_TIMEOUT.
-        let on_msg: WeChatOnMessageFn = Arc::new(|_uid, _ctx, _text, _is_group, _| {
+        let on_msg: WeChatOnMessageFn = Arc::new(|_uid, _ctx, _text, _is_group, _file, _| {
             Box::pin(async {
                 tokio::time::sleep(Duration::from_secs(10)).await;
                 Ok(ChannelResponse::Text("late reply".to_string()))

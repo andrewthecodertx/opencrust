@@ -40,7 +40,7 @@ pub use traits::{
 #[cfg(feature = "wechat")]
 pub use wechat::webhook::{WeChatWebhookState, wechat_webhook, wechat_webhook_verify};
 #[cfg(feature = "wechat")]
-pub use wechat::{WeChatChannel, WeChatGroupFilter, WeChatOnMessageFn};
+pub use wechat::{WeChatChannel, WeChatFile, WeChatGroupFilter, WeChatOnMessageFn};
 #[cfg(feature = "whatsapp-web")]
 pub use whatsapp::web::{WhatsAppWebChannel, WhatsAppWebGroupFilter};
 #[cfg(feature = "whatsapp")]
