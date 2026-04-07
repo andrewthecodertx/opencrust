@@ -573,7 +573,8 @@ async function loadUsage() {
   const period = periodEl ? periodEl.value : "";
   const url = period ? `/api/usage?period=${encodeURIComponent(period)}` : "/api/usage";
   try {
-    const r = await fetch(url);
+    const headers = gatewayKey ? { Authorization: `Bearer ${gatewayKey}` } : {};
+    const r = await fetch(url, { cache: "no-store", headers });
     const j = await r.json();
     const fmt = (n) => (typeof n === "number" ? n.toLocaleString() : "—");
     const inputEl = document.getElementById("usage-input");
