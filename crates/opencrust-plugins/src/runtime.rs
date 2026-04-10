@@ -34,7 +34,6 @@ impl Drop for WasmRuntime {
 impl WasmRuntime {
     pub fn new(manifest: PluginManifest, wasm_path: PathBuf) -> Result<Self> {
         let mut config = Config::new();
-        config.async_support(true);
         config.epoch_interruption(true);
 
         let engine =
