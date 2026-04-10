@@ -1082,10 +1082,18 @@ async fn setup_slack(
     env_app: Option<&str>,
 ) -> Result<Option<ChannelConfig>> {
     println!();
-    println!("  Slack Setup");
-    println!("  1. Go to https://api.slack.com/apps and create an app");
-    println!("  2. Enable Socket Mode and get an app-level token (xapp-...)");
-    println!("  3. Install to workspace and get bot token (xoxb-...)");
+    println!("  Slack Setup (Socket Mode - no public URL needed)");
+    println!();
+    println!("  1. Create a Slack app at https://api.slack.com/apps (From scratch)");
+    println!("  2. Enable Socket Mode (left sidebar) and create an app-level token");
+    println!("     with the connections:write scope. Copy the xapp-... token.");
+    println!("  3. Go to Event Subscriptions, enable events, and subscribe to:");
+    println!("     message.im, message.channels, message.groups");
+    println!("  4. Go to OAuth & Permissions and add bot scopes:");
+    println!("     chat:write, files:read");
+    println!("  5. Install the app to your workspace and copy the xoxb-... bot token.");
+    println!();
+    println!("  Full guide: https://opencrust-org.github.io/opencrust/channels/slack.html");
     println!();
 
     let bot_token = prompt_token_with_source(

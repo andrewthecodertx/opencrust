@@ -492,12 +492,14 @@ async fn handle_socket_event(
                 let cb_user = user_id.clone();
                 let cb_text = text.clone();
 
+                let name_client = client.clone();
+                let name_token = bot_token.clone();
                 let callback_handle = tokio::spawn(async move {
-                    // user_name = user_id for now (would need users.info call for display name)
+                    let user_name = api::get_user_name(&name_client, &name_token, &cb_user).await;
                     on_message(
                         cb_channel,
-                        cb_user.clone(),
                         cb_user,
+                        user_name,
                         cb_text,
                         is_group,
                         slack_file,

@@ -114,6 +114,66 @@ pub async fn download_file(client: &Client, bot_token: &str, url: &str) -> Resul
     Ok(bytes.to_vec())
 }
 
+/// Look up a Slack user's display name via `users.info`.
+///
+/// Returns the display name if set, otherwise the real name, falling back to
+/// the user ID if the call fails.
+pub async fn get_user_name(client: &Client, bot_token: &str, user_id: &str) -> String {
+    #[derive(Deserialize)]
+    struct Profile {
+        display_name: Option<String>,
+        real_name: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct User {
+        profile: Option<Profile>,
+        name: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct Resp {
+        ok: bool,
+        user: Option<User>,
+    }
+
+    let resp = client
+        .get(format!("{SLACK_API_BASE}/users.info"))
+        .bearer_auth(bot_token)
+        .query(&[("user", user_id)])
+        .send()
+        .await;
+
+    let resp = match resp {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("users.info request failed: {e}");
+            return user_id.to_string();
+        }
+    };
+
+    let body: Resp = match resp.json().await {
+        Ok(b) => b,
+        Err(e) => {
+            warn!("users.info parse failed: {e}");
+            return user_id.to_string();
+        }
+    };
+
+    if !body.ok {
+        return user_id.to_string();
+    }
+
+    body.user
+        .and_then(|u| {
+            let profile = u.profile?;
+            let display = profile.display_name.filter(|s| !s.is_empty());
+            let real = profile.real_name.filter(|s| !s.is_empty());
+            display.or(real).or(u.name)
+        })
+        .unwrap_or_else(|| user_id.to_string())
+}
+
 /// Update an existing Slack message (used for streaming edits).
 pub async fn update_message(
     client: &Client,

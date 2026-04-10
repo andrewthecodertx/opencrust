@@ -5,6 +5,7 @@
 - [Architecture](./architecture.md)
   - [Decision Records](./adr/README.md)
 - [Channels](./channels.md)
+  - [Slack Setup](./channels/slack.md)
   - [iMessage Setup](./channels/imessage.md)
   - [LINE Setup](./channels/line.md)
 - [Integrations](./integrations.md)

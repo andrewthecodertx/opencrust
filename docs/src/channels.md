@@ -13,5 +13,6 @@ OpenCrust supports multiple communication channels for your AI agents.
 
 ## Setup Guides
 
+- [Slack Setup](./channels/slack.md)
 - [iMessage Setup](./channels/imessage.md)
 - [LINE Setup](./channels/line.md)
