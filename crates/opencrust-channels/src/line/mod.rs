@@ -61,6 +61,9 @@ pub struct LineChannel {
     /// Defaults to `https://api-data.line.me/v2/bot`.
     data_api_base_url: String,
     display: String,
+    /// LINE user ID of this bot, resolved from `GET /v2/bot/info` on connect.
+    /// Used to detect `@mention` in group messages.
+    bot_user_id: Option<String>,
     status: ChannelStatus,
     on_message: LineOnMessageFn,
     group_filter: LineGroupFilter,
@@ -92,7 +95,8 @@ impl LineChannel {
             channel_secret,
             api_base_url: api::LINE_API_BASE.to_string(),
             data_api_base_url: api::LINE_DATA_API_BASE.to_string(),
-            display: "LINE".to_string(),
+            display: String::new(),
+            bot_user_id: None,
             status: ChannelStatus::Disconnected,
             on_message,
             group_filter,
@@ -125,6 +129,10 @@ impl LineChannel {
 
     pub fn group_filter(&self) -> &LineGroupFilter {
         &self.group_filter
+    }
+
+    pub fn bot_user_id(&self) -> Option<&str> {
+        self.bot_user_id.as_deref()
     }
 
     /// Verify the `X-Line-Signature` header.
@@ -202,6 +210,20 @@ impl ChannelLifecycle for LineChannel {
     async fn connect(&mut self) -> Result<()> {
         // LINE is webhook-driven — no persistent connection needed.
         // Register POST /line/webhook in the gateway router.
+        match api::get_bot_info(&self.client, &self.channel_access_token, &self.api_base_url).await
+        {
+            Ok(info) => {
+                info!(
+                    "line: bot resolved — name: {}, userId: {}",
+                    info.display_name, info.user_id
+                );
+                self.display = info.display_name;
+                self.bot_user_id = Some(info.user_id);
+            }
+            Err(e) => {
+                tracing::warn!("line: could not resolve bot info: {e}");
+            }
+        }
         self.status = ChannelStatus::Connected;
         info!("line channel connected (webhook mode)");
         Ok(())
@@ -283,7 +305,7 @@ mod tests {
     fn channel_type_is_line() {
         let ch = LineChannel::new("tok".to_string(), "sec".to_string(), make_on_msg());
         assert_eq!(ch.channel_type(), "line");
-        assert_eq!(ch.display_name(), "LINE");
+        assert_eq!(ch.display_name(), "");
         assert_eq!(ch.status(), ChannelStatus::Disconnected);
     }
 

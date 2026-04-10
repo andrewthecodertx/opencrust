@@ -3128,7 +3128,7 @@ pub fn build_imessage_channels(
 pub fn build_line_channels(
     config: &AppConfig,
     state: &SharedState,
-) -> Vec<Arc<opencrust_channels::line::LineChannel>> {
+) -> Vec<opencrust_channels::line::LineChannel> {
     use opencrust_channels::line::{LineChannel, LineFile, LineGroupFilter, LineOnMessageFn};
 
     let mut channels = Vec::new();
@@ -3174,15 +3174,9 @@ pub fn build_line_channels(
             .and_then(|v| v.as_str())
             .unwrap_or("open");
 
-        if group_policy == "mention" {
-            warn!(
-                "line channel '{name}': group_policy 'mention' is not supported \
-                 (LINE has no mention detection API) — treating as 'disabled'"
-            );
-        }
-
         let group_filter: LineGroupFilter = match group_policy {
-            "disabled" | "mention" => Arc::new(|_| false),
+            "disabled" => Arc::new(|_| false),
+            "mention" => Arc::new(|is_mentioned| is_mentioned),
             _ => Arc::new(|_| true), // "open" — process all group messages
         };
 
@@ -3414,12 +3408,12 @@ pub fn build_line_channels(
             },
         );
 
-        let channel = Arc::new(LineChannel::with_group_filter(
+        let channel = LineChannel::with_group_filter(
             channel_access_token,
             channel_secret,
             on_message,
             group_filter,
-        ));
+        );
         channels.push(channel);
         info!("configured line channel: {name}");
     }
