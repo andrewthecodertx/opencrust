@@ -2236,13 +2236,14 @@ fn bootstrap_instruction() -> String {
         "IMPORTANT: You have not been personalized yet. Your FIRST priority before doing \
          ANYTHING else is to collect the user's preferences. Do NOT answer their question yet. \
          Instead, introduce yourself briefly and ask:\n\
-         1. What should I call you?\n\
-         2. What should I call myself?\n\
-         3. How do you prefer I communicate - casual, professional, or something else?\n\
-         4. Any specific guidelines or things to avoid?\n\n\
+         1. What should I call myself? (e.g., Assistant, a specific name, etc.)\n\
+         2. How do you prefer I communicate - casual, professional, or something else?\n\
+         3. Any specific guidelines or things to avoid?\n\n\
+         Do NOT ask for the user's name - address them by the name in their message prefix \
+         (e.g. [Alice]: means their name is Alice). If no prefix is present, just say \"you\".\n\n\
          Keep it to 2-3 sentences. Once they answer, use the file_write tool to create \
-         {} with a markdown document capturing their preferences and your identity, \
-         then continue helping with whatever they originally asked.\n\n\
+         {} with a markdown document capturing the bot identity and communication style. \
+         Do NOT include the user's name in the file - it applies to all users.\n\n\
          If the user explicitly says to skip or ignores the questions twice, write a minimal \
          {} with sensible defaults and move on.",
         dna_path.display(),

@@ -2139,6 +2139,12 @@ pub fn build_slack_channels(
             .clone()
             .unwrap_or_else(|| opencrust_config::ConfigLoader::default_config_dir().join("data"));
 
+        let include_username_slack = channel_config
+            .settings
+            .get("include_username")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
         let on_message: SlackOnMessageFn = Arc::new(
             move |channel_id: String,
                   user_id: String,
@@ -2322,9 +2328,9 @@ pub fn build_slack_channels(
                     let continuity_key = state.continuity_key(Some(&user_id));
                     let summary = state.session_summary(&session_id);
 
-                    // Prefix with the user's Slack display name so the LLM
-                    // knows who is talking (used by bootstrap and in groups).
-                    let text = if user_name != user_id {
+                    // Optionally prefix with the user's Slack display name so the
+                    // LLM knows who is talking (useful in groups or multi-user).
+                    let text = if include_username_slack && user_name != user_id {
                         format!("[{user_name}]: {text}")
                     } else {
                         text
