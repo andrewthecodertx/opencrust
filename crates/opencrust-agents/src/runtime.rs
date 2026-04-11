@@ -7,7 +7,9 @@ use dashmap::DashMap;
 use futures::StreamExt;
 use futures::future::join_all;
 use opencrust_common::{Error, Result};
-use opencrust_db::{MemoryEntry, MemoryProvider, MemoryRole, NewMemoryEntry, RecallQuery};
+use opencrust_db::{
+    DocumentStore, MemoryEntry, MemoryProvider, MemoryRole, NewMemoryEntry, RecallQuery,
+};
 use tokio::sync::mpsc;
 use tracing::{info, instrument, warn};
 
@@ -55,6 +57,8 @@ pub struct AgentRuntime {
     debug_accumulator: Mutex<HashMap<String, Vec<String>>>,
     /// Path to the document store DB for auto-RAG injection.
     doc_db_path: Option<PathBuf>,
+    /// Cached document store opened once at startup for auto-RAG.
+    doc_store: Option<Arc<DocumentStore>>,
 }
 
 /// Per-session tool configuration set before processing a message.
@@ -79,6 +83,7 @@ impl AgentRuntime {
             max_context_tokens: None,
             recall_limit: 10,
             doc_db_path: None,
+            doc_store: None,
             summarization_enabled: true,
             usage_accumulator: Mutex::new(HashMap::new()),
             session_tool_config: DashMap::new(),
@@ -2103,7 +2108,17 @@ impl AgentRuntime {
     }
 
     /// Set the path to the document store for auto-RAG context injection.
+    /// Opens and caches the store so subsequent requests reuse the same connection.
     pub fn set_doc_db_path(&mut self, path: PathBuf) {
+        match DocumentStore::open(&path) {
+            Ok(store) => {
+                info!("auto_rag: document store cached at {}", path.display());
+                self.doc_store = Some(Arc::new(store));
+            }
+            Err(e) => {
+                warn!("auto_rag: failed to open document store for caching: {e}");
+            }
+        }
         self.doc_db_path = Some(path);
     }
 
@@ -2113,16 +2128,10 @@ impl AgentRuntime {
     /// Returns `None` when no embedding provider is set, no doc DB path is configured,
     /// or no chunks score above the similarity threshold.
     async fn auto_rag_context(&self, user_text: &str) -> Option<String> {
-        let db_path = self.doc_db_path.as_ref()?;
-        if !db_path.exists() {
-            warn!("auto_rag: doc_db_path does not exist: {:?}", db_path);
-            return None;
-        }
+        let store = self.doc_store.as_ref()?;
 
         const THRESHOLD: f64 = 0.42;
         const TOP_K: usize = 3;
-
-        let store = opencrust_db::DocumentStore::open(db_path).ok()?;
 
         let chunks = if let Some(embedding) = self.embed_query(user_text).await {
             info!(
