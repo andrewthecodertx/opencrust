@@ -295,10 +295,10 @@ impl DocumentStore {
         }
 
         // Index into sqlite-vec immediately so searches reflect new chunks.
-        if self.vec_enabled {
-            if let (Some(emb), Some(d)) = (embedding, dims) {
-                self.insert_chunk_into_vec(&id, emb, d)?;
-            }
+        if self.vec_enabled
+            && let (Some(emb), Some(d)) = (embedding, dims)
+        {
+            self.insert_chunk_into_vec(&id, emb, d)?;
         }
 
         debug!(
