@@ -6,7 +6,8 @@ use std::sync::{Mutex, MutexGuard};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::migrations::DOCUMENT_SCHEMA_V1;
+use crate::migrations::{DOCUMENT_SCHEMA_V1, DOCUMENT_SCHEMA_V2};
+use crate::vector_store::{ensure_sqlite_vec_registered, verify_vec_extension};
 
 /// Metadata about an ingested document.
 #[derive(Debug, Clone)]
@@ -32,49 +33,78 @@ pub struct DocumentChunk {
 
 /// Store for RAG document ingestion and vector-based retrieval.
 ///
-/// Documents are split into chunks, each optionally carrying an embedding
-/// vector. Similarity search loads all embedded chunks and ranks them
-/// using cosine similarity in Rust (no dependency on sqlite-vec).
+/// Similarity search uses sqlite-vec KNN when available (fast, scales to
+/// millions of chunks), falling back to in-Rust cosine similarity otherwise.
 pub struct DocumentStore {
     conn: Mutex<Connection>,
+    /// Whether sqlite-vec is loaded and functional on this connection.
+    vec_enabled: bool,
 }
 
 impl DocumentStore {
     /// Open or create the document store at the given database path.
     pub fn open(db_path: &Path) -> Result<Self> {
         info!("opening document store at {}", db_path.display());
+        let vec_enabled = ensure_sqlite_vec_registered();
+
         let conn = Connection::open(db_path)
             .map_err(|e| Error::Database(format!("failed to open document database: {e}")))?;
 
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
             .map_err(|e| Error::Database(format!("failed to set pragmas: {e}")))?;
 
+        let vec_enabled = if vec_enabled {
+            verify_vec_extension(&conn)
+        } else {
+            false
+        };
+
         let store = Self {
             conn: Mutex::new(conn),
+            vec_enabled,
         };
         store.run_migrations()?;
+        if store.vec_enabled {
+            store.backfill_vec_index()?;
+        }
         Ok(store)
     }
 
     /// Create an in-memory document store (useful for testing).
     pub fn in_memory() -> Result<Self> {
+        let vec_enabled = ensure_sqlite_vec_registered();
+
         let conn = Connection::open_in_memory()
             .map_err(|e| Error::Database(format!("failed to open in-memory document db: {e}")))?;
 
         conn.execute_batch("PRAGMA foreign_keys=ON;")
             .map_err(|e| Error::Database(format!("failed to set pragmas: {e}")))?;
 
+        let vec_enabled = if vec_enabled {
+            verify_vec_extension(&conn)
+        } else {
+            false
+        };
+
         let store = Self {
             conn: Mutex::new(conn),
+            vec_enabled,
         };
         store.run_migrations()?;
         Ok(store)
     }
 
+    /// Whether sqlite-vec KNN is active for this store.
+    pub fn vec_enabled(&self) -> bool {
+        self.vec_enabled
+    }
+
     fn run_migrations(&self) -> Result<()> {
         let conn = self.connection()?;
         conn.execute_batch(DOCUMENT_SCHEMA_V1.sql)
-            .map_err(|e| Error::Database(format!("document migration failed: {e}")))?;
+            .map_err(|e| Error::Database(format!("document migration v1 failed: {e}")))?;
+        conn.execute_batch(DOCUMENT_SCHEMA_V2.sql)
+            .map_err(|e| Error::Database(format!("document migration v2 failed: {e}")))?;
         Ok(())
     }
 
@@ -83,6 +113,126 @@ impl DocumentStore {
             .lock()
             .map_err(|_| Error::Database("document store lock poisoned".into()))
     }
+
+    // -----------------------------------------------------------------------
+    // sqlite-vec helpers
+    // -----------------------------------------------------------------------
+
+    /// Ensure a `vec_doc_chunks_{dims}` virtual table exists for the given
+    /// embedding dimensionality. No-op if vec is disabled or table exists.
+    fn ensure_doc_vec_table(&self, dims: usize) -> Result<()> {
+        let conn = self.connection()?;
+        let table = format!("vec_doc_chunks_{dims}");
+
+        let exists: bool = conn
+            .query_row(
+                "SELECT count(*) > 0 FROM sqlite_master WHERE type='table' AND name=?",
+                params![table],
+                |row| row.get(0),
+            )
+            .map_err(|e| Error::Database(format!("failed to check vec table: {e}")))?;
+
+        if !exists {
+            // Use cosine distance so similarity = 1 - distance for unit vectors.
+            let sql = format!(
+                "CREATE VIRTUAL TABLE [{table}] \
+                 USING vec0(embedding float[{dims}] distance_metric=cosine)"
+            );
+            conn.execute_batch(&sql)
+                .map_err(|e| Error::Database(format!("failed to create vec table {table}: {e}")))?;
+            info!("created vec0 table: {table} ({dims} dims)");
+        }
+        Ok(())
+    }
+
+    /// Insert a chunk embedding into the sqlite-vec index.
+    /// Maps chunk UUID → integer rowid via `vec_doc_id_map`.
+    fn insert_chunk_into_vec(&self, chunk_id: &str, embedding: &[f32], dims: usize) -> Result<()> {
+        self.ensure_doc_vec_table(dims)?;
+        let table = format!("vec_doc_chunks_{dims}");
+        let blob = embedding_to_blob(embedding);
+
+        let conn = self.connection()?;
+
+        conn.execute(
+            "INSERT OR IGNORE INTO vec_doc_id_map (chunk_id) VALUES (?)",
+            params![chunk_id],
+        )
+        .map_err(|e| Error::Database(format!("failed to insert vec id mapping: {e}")))?;
+
+        let rowid: i64 = conn
+            .query_row(
+                "SELECT rowid FROM vec_doc_id_map WHERE chunk_id = ?",
+                params![chunk_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| Error::Database(format!("failed to get vec rowid: {e}")))?;
+
+        conn.execute(
+            &format!("INSERT OR REPLACE INTO [{table}] (rowid, embedding) VALUES (?, ?)"),
+            params![rowid, blob],
+        )
+        .map_err(|e| Error::Database(format!("failed to insert into {table}: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Backfill the sqlite-vec index from existing `document_chunks` rows.
+    /// Called once at `open()` to catch chunks ingested before vec was enabled.
+    /// Skips chunks already present in `vec_doc_id_map`.
+    fn backfill_vec_index(&self) -> Result<()> {
+        // Collect chunks that have embeddings but are not yet in the vec index.
+        let rows: Vec<(String, Vec<u8>, usize)> = {
+            let conn = self.connection()?;
+            let mut stmt = conn
+                .prepare(
+                    "SELECT c.id, c.embedding, c.embedding_dimensions
+                     FROM document_chunks c
+                     LEFT JOIN vec_doc_id_map m ON m.chunk_id = c.id
+                     WHERE c.embedding IS NOT NULL
+                       AND c.embedding_dimensions IS NOT NULL
+                       AND m.rowid IS NULL",
+                )
+                .map_err(|e| Error::Database(format!("backfill prepare failed: {e}")))?;
+
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, i64>(2)? as usize,
+                    ))
+                })
+                .map_err(|e| Error::Database(format!("backfill query failed: {e}")))?;
+
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| Error::Database(format!("backfill collect failed: {e}")))?
+        };
+
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        info!("backfilling vec index for {} existing chunks", rows.len());
+        let mut count = 0usize;
+        for (chunk_id, blob, dims) in rows {
+            match blob_to_embedding(&blob) {
+                Ok(emb) => {
+                    self.insert_chunk_into_vec(&chunk_id, &emb, dims)?;
+                    count += 1;
+                }
+                Err(e) => {
+                    warn!("skipping chunk {chunk_id} during backfill: {e}");
+                }
+            }
+        }
+        info!("vec backfill complete: {count} chunks indexed");
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Public API
+    // -----------------------------------------------------------------------
 
     /// Register a new document and return its generated ID.
     pub fn add_document(
@@ -105,6 +255,8 @@ impl DocumentStore {
     }
 
     /// Add a chunk belonging to a document. Returns the generated chunk ID.
+    /// When `embedding` and `dims` are provided and sqlite-vec is enabled,
+    /// the chunk is also inserted into the KNN index immediately.
     #[allow(clippy::too_many_arguments)]
     pub fn add_chunk(
         &self,
@@ -121,24 +273,33 @@ impl DocumentStore {
         let dims_i64 = dims.map(|d| d as i64);
         let token_count_i64 = token_count.map(|t| t as i64);
 
-        let conn = self.connection()?;
-        conn.execute(
-            "INSERT INTO document_chunks (
-                id, document_id, chunk_index, text,
-                embedding, embedding_model, embedding_dimensions, token_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            params![
-                id,
-                doc_id,
-                chunk_index as i64,
-                text,
-                embedding_blob,
-                model,
-                dims_i64,
-                token_count_i64,
-            ],
-        )
-        .map_err(|e| Error::Database(format!("failed to insert document chunk: {e}")))?;
+        {
+            let conn = self.connection()?;
+            conn.execute(
+                "INSERT INTO document_chunks (
+                    id, document_id, chunk_index, text,
+                    embedding, embedding_model, embedding_dimensions, token_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    id,
+                    doc_id,
+                    chunk_index as i64,
+                    text,
+                    embedding_blob,
+                    model,
+                    dims_i64,
+                    token_count_i64,
+                ],
+            )
+            .map_err(|e| Error::Database(format!("failed to insert document chunk: {e}")))?;
+        }
+
+        // Index into sqlite-vec immediately so searches reflect new chunks.
+        if self.vec_enabled {
+            if let (Some(emb), Some(d)) = (embedding, dims) {
+                self.insert_chunk_into_vec(&id, emb, d)?;
+            }
+        }
 
         debug!(
             "added chunk {} for document {} (index {})",
@@ -158,12 +319,146 @@ impl DocumentStore {
         Ok(())
     }
 
-    /// Vector similarity search across all document chunks that have embeddings.
+    /// Vector similarity search across document chunks.
     ///
-    /// Loads candidate chunks, deserializes their embeddings, computes cosine
-    /// similarity against `query_embedding`, filters by `min_similarity`, and
-    /// returns the top `limit` results sorted by descending score.
+    /// When sqlite-vec is enabled, uses KNN on the vec0 virtual table
+    /// (O(log n)) instead of loading all embeddings into memory.
+    /// Falls back to brute-force cosine similarity when sqlite-vec is
+    /// unavailable (e.g. unsupported platform).
     pub fn search_chunks(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+        min_similarity: f64,
+    ) -> Result<Vec<DocumentChunk>> {
+        if self.vec_enabled {
+            self.search_chunks_knn(query_embedding, limit, min_similarity)
+        } else {
+            self.search_chunks_brute_force(query_embedding, limit, min_similarity)
+        }
+    }
+
+    /// KNN search via sqlite-vec. Returns top-`limit` chunks with
+    /// cosine similarity >= min_similarity.
+    fn search_chunks_knn(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+        min_similarity: f64,
+    ) -> Result<Vec<DocumentChunk>> {
+        let dims = query_embedding.len();
+        let table = format!("vec_doc_chunks_{dims}");
+
+        // If the vec table doesn't exist yet there are no indexed chunks.
+        let table_exists: bool = {
+            let conn = self.connection()?;
+            conn.query_row(
+                "SELECT count(*) > 0 FROM sqlite_master WHERE type='table' AND name=?",
+                params![table],
+                |row| row.get(0),
+            )
+            .map_err(|e| Error::Database(format!("failed to check vec table: {e}")))?
+        };
+        if !table_exists {
+            return Ok(Vec::new());
+        }
+
+        let blob = embedding_to_blob(query_embedding);
+        // Cosine distance = 1 - cosine_similarity for unit vectors.
+        // min_similarity threshold → max_distance = 1 - min_similarity.
+        // Fetch extra candidates to absorb any filtering loss.
+        let fetch_k = (limit * 2).max(limit + 8);
+        let max_distance = 1.0 - min_similarity;
+
+        let knn_results: Vec<(String, f64)> = {
+            let conn = self.connection()?;
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT m.chunk_id, v.distance
+                     FROM [{table}] v
+                     JOIN vec_doc_id_map m ON m.rowid = v.rowid
+                     WHERE v.embedding MATCH ? AND k = ?"
+                ))
+                .map_err(|e| Error::Database(format!("failed to prepare KNN query: {e}")))?;
+
+            let rows = stmt
+                .query_map(params![blob, fetch_k as i64], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+                })
+                .map_err(|e| Error::Database(format!("KNN query failed: {e}")))?;
+
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| Error::Database(format!("failed to collect KNN results: {e}")))?
+        };
+
+        // Apply similarity threshold and convert distance → score.
+        let candidate_ids: Vec<(String, f64)> = knn_results
+            .into_iter()
+            .filter(|(_, dist)| *dist <= max_distance)
+            .map(|(id, dist)| (id, 1.0 - dist))
+            .take(limit)
+            .collect();
+
+        if candidate_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Fetch text and metadata for the matched chunks.
+        let placeholders: String = candidate_ids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let mut chunks: Vec<DocumentChunk> = {
+            let conn = self.connection()?;
+            let sql = format!(
+                "SELECT c.id, c.document_id, d.name, c.chunk_index, c.text
+                 FROM document_chunks c
+                 JOIN documents d ON d.id = c.document_id
+                 WHERE c.id IN ({placeholders})"
+            );
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| Error::Database(format!("failed to prepare chunk fetch: {e}")))?;
+
+            let id_values: Vec<&dyn rusqlite::ToSql> = candidate_ids
+                .iter()
+                .map(|(id, _)| id as &dyn rusqlite::ToSql)
+                .collect();
+
+            let rows = stmt
+                .query_map(id_values.as_slice(), |row| {
+                    Ok(DocumentChunk {
+                        id: row.get(0)?,
+                        document_id: row.get(1)?,
+                        document_name: row.get(2)?,
+                        chunk_index: row.get::<_, i64>(3)? as usize,
+                        text: row.get(4)?,
+                        score: 0.0,
+                    })
+                })
+                .map_err(|e| Error::Database(format!("failed to fetch chunk text: {e}")))?;
+
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| Error::Database(format!("failed to collect chunks: {e}")))?
+        };
+
+        // Attach scores from the KNN results and sort by descending similarity.
+        for chunk in &mut chunks {
+            if let Some((_, score)) = candidate_ids.iter().find(|(id, _)| id == &chunk.id) {
+                chunk.score = *score;
+            }
+        }
+        chunks.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+
+        Ok(chunks)
+    }
+
+    /// Brute-force cosine similarity search. Loads all embeddings into memory.
+    /// Used as fallback when sqlite-vec is not available.
+    fn search_chunks_brute_force(
         &self,
         query_embedding: &[f32],
         limit: usize,
@@ -182,19 +477,13 @@ impl DocumentStore {
 
         let rows = stmt
             .query_map([], |row| {
-                let id: String = row.get(0)?;
-                let document_id: String = row.get(1)?;
-                let document_name: String = row.get(2)?;
-                let chunk_index: i64 = row.get(3)?;
-                let text: String = row.get(4)?;
-                let embedding_blob: Vec<u8> = row.get(5)?;
                 Ok((
-                    id,
-                    document_id,
-                    document_name,
-                    chunk_index,
-                    text,
-                    embedding_blob,
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Vec<u8>>(5)?,
                 ))
             })
             .map_err(|e| Error::Database(format!("failed to execute chunk search: {e}")))?;
@@ -214,7 +503,6 @@ impl DocumentStore {
             };
 
             let score = cosine_similarity(query_embedding, &embedding) as f64;
-
             if score < min_similarity {
                 continue;
             }
@@ -234,7 +522,6 @@ impl DocumentStore {
 
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
         scored.truncate(limit);
-
         Ok(scored.into_iter().map(|(_, chunk)| chunk).collect())
     }
 
@@ -267,13 +554,55 @@ impl DocumentStore {
             .map_err(|e| Error::Database(format!("failed to collect documents: {e}")))
     }
 
-    /// Remove a document by name, cascading to its chunks. Returns true if
-    /// a document was actually deleted.
+    /// Remove a document by name, cascading to its chunks.
+    /// Also cleans up the corresponding vec index mapping entries.
+    /// Returns true if a document was actually deleted.
     pub fn remove_document(&self, name: &str) -> Result<bool> {
-        let conn = self.connection()?;
-        let deleted = conn
-            .execute("DELETE FROM documents WHERE name = ?", params![name])
-            .map_err(|e| Error::Database(format!("failed to remove document: {e}")))?;
+        // Collect chunk IDs before deletion so we can clean up the vec index.
+        let chunk_ids: Vec<String> = {
+            let conn = self.connection()?;
+            let doc_id: Option<String> = conn
+                .query_row(
+                    "SELECT id FROM documents WHERE name = ?",
+                    params![name],
+                    |row| row.get(0),
+                )
+                .ok();
+
+            if let Some(did) = doc_id {
+                let mut stmt = conn
+                    .prepare("SELECT id FROM document_chunks WHERE document_id = ?")
+                    .map_err(|e| {
+                        Error::Database(format!("failed to list chunks for removal: {e}"))
+                    })?;
+                let rows = stmt
+                    .query_map(params![did], |row| row.get::<_, String>(0))
+                    .map_err(|e| Error::Database(format!("failed to query chunks: {e}")))?;
+                rows.collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(|e| Error::Database(format!("failed to collect chunk ids: {e}")))?
+            } else {
+                Vec::new()
+            }
+        };
+
+        // Delete the document (chunks cascade automatically).
+        let deleted = {
+            let conn = self.connection()?;
+            conn.execute("DELETE FROM documents WHERE name = ?", params![name])
+                .map_err(|e| Error::Database(format!("failed to remove document: {e}")))?
+        };
+
+        // Clean up vec_doc_id_map entries (vec0 orphaned rows are harmless but
+        // removing from the map keeps index entries from being returned by KNN).
+        if deleted > 0 && !chunk_ids.is_empty() {
+            let conn = self.connection()?;
+            for chunk_id in &chunk_ids {
+                let _ = conn.execute(
+                    "DELETE FROM vec_doc_id_map WHERE chunk_id = ?",
+                    params![chunk_id],
+                );
+            }
+        }
 
         if deleted > 0 {
             info!("removed document '{}'", name);
@@ -384,6 +713,15 @@ mod tests {
             )
             .expect("failed to query sqlite_master for document_chunks");
         assert_eq!(chunk_exists, 1);
+
+        let map_exists: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='vec_doc_id_map'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("failed to query sqlite_master for vec_doc_id_map");
+        assert_eq!(map_exists, 1);
     }
 
     #[test]
@@ -439,13 +777,11 @@ mod tests {
         let removed = store.remove_document("delete-me.md").expect("remove");
         assert!(removed);
 
-        // Verify the document is gone
         let doc = store
             .get_document_by_name("delete-me.md")
             .expect("get_document_by_name");
         assert!(doc.is_none());
 
-        // Verify chunks are gone (cascade)
         let conn = store.connection().expect("lock");
         let count: i64 = conn
             .query_row(
@@ -528,5 +864,35 @@ mod tests {
             .expect("search filtered");
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].text, "about cats");
+    }
+
+    #[test]
+    fn remove_document_cleans_vec_index() {
+        let store = DocumentStore::in_memory().expect("store");
+        let doc_id = store
+            .add_document("cleanup.txt", None, "text/plain")
+            .expect("add_document");
+
+        store
+            .add_chunk(
+                &doc_id,
+                0,
+                "some text",
+                Some(&[1.0, 0.0, 0.0]),
+                Some("test"),
+                Some(3),
+                None,
+            )
+            .expect("chunk");
+
+        let removed = store.remove_document("cleanup.txt").expect("remove");
+        assert!(removed);
+
+        // vec_doc_id_map should be empty after removal
+        let conn = store.connection().expect("lock");
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM vec_doc_id_map", [], |row| row.get(0))
+            .expect("count");
+        assert_eq!(count, 0);
     }
 }

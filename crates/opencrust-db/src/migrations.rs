@@ -71,6 +71,22 @@ pub const DOCUMENT_SCHEMA_V1: Migration = Migration {
     sql: DOCUMENT_SCHEMA_V1_SQL,
 };
 
+/// Rowid mapping table for the sqlite-vec KNN index on document chunks.
+/// vec0 virtual tables require integer rowids; this table maps chunk UUIDs to
+/// auto-assigned integer rowids so the KNN results can be joined back to text.
+pub const DOCUMENT_SCHEMA_V2_SQL: &str = "
+CREATE TABLE IF NOT EXISTS vec_doc_id_map (
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+    chunk_id TEXT NOT NULL UNIQUE
+);
+";
+
+pub const DOCUMENT_SCHEMA_V2: Migration = Migration {
+    version: 4,
+    name: "document_vec_id_map",
+    sql: DOCUMENT_SCHEMA_V2_SQL,
+};
+
 pub const USAGE_SCHEMA_V1_SQL: &str = "
 CREATE TABLE IF NOT EXISTS usage_log (
     id TEXT PRIMARY KEY,
