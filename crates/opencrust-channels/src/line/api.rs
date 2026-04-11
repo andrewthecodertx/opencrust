@@ -63,6 +63,58 @@ pub async fn reply(
     }
 }
 
+/// Bot profile returned by `GET /v2/bot/info`.
+pub struct BotInfo {
+    /// Display name shown to users (e.g. `"MyBot"`).
+    pub display_name: String,
+    /// LINE user ID of the bot (e.g. `"Uxxxxxxxxx"`), used for mention detection.
+    pub user_id: String,
+}
+
+/// Fetch the bot's profile from the LINE Bot API.
+///
+/// Calls `GET {base_url}/info` and returns `displayName` and `userId`.
+pub async fn get_bot_info(
+    client: &Client,
+    channel_access_token: &str,
+    base_url: &str,
+) -> Result<BotInfo, String> {
+    let resp = client
+        .get(format!("{base_url}/info"))
+        .bearer_auth(channel_access_token)
+        .send()
+        .await
+        .map_err(|e| format!("line get_bot_info request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("line get_bot_info error {status}: {body}"));
+    }
+
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("line get_bot_info parse failed: {e}"))?;
+
+    let display_name = json
+        .get("displayName")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "line get_bot_info: displayName missing".to_string())?
+        .to_string();
+
+    let user_id = json
+        .get("userId")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "line get_bot_info: userId missing".to_string())?
+        .to_string();
+
+    Ok(BotInfo {
+        display_name,
+        user_id,
+    })
+}
+
 /// Send a push message to a user ID (paid tier, works at any time).
 pub async fn push(
     client: &Client,

@@ -294,7 +294,14 @@ impl GatewayServer {
         }
 
         // Start LINE channels (webhook mode)
-        let line_channels = build_line_channels(&state.config, &state);
+        let mut line_channels_raw = build_line_channels(&state.config, &state);
+        for channel in &mut line_channels_raw {
+            if let Err(e) = channel.connect().await {
+                warn!("line channel failed to connect: {e}");
+            }
+        }
+        let line_channels: Vec<Arc<opencrust_channels::line::LineChannel>> =
+            line_channels_raw.into_iter().map(Arc::new).collect();
         for channel in &line_channels {
             let sender: Arc<dyn ChannelSender> = Arc::from(channel.create_sender());
             state

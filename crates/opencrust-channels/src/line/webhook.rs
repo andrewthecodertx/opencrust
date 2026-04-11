@@ -146,8 +146,24 @@ pub async fn line_webhook(
             user_id.clone()
         };
 
-        // Apply group filter — LINE has no reliable mention detection, so is_mentioned = false.
-        if is_group && !channel.group_filter()(false) {
+        // Detect @mention: LINE includes mention data in message.mention.mentionees.
+        // Each mentionee has a `userId` field; match against the bot's own userId.
+        let is_mentioned = if is_group {
+            let bot_uid = channel.bot_user_id().unwrap_or("");
+            msg.get("mention")
+                .and_then(|m| m.get("mentionees"))
+                .and_then(|v| v.as_array())
+                .map(|mentionees| {
+                    mentionees
+                        .iter()
+                        .any(|m| m.get("userId").and_then(|v| v.as_str()) == Some(bot_uid))
+                })
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
+        if is_group && !channel.group_filter()(is_mentioned) {
             continue;
         }
 
