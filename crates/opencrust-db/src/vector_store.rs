@@ -9,7 +9,7 @@ static mut SQLITE_VEC_LOADED: bool = false;
 
 /// Register sqlite-vec as an auto-extension. This is process-global and only
 /// needs to happen once. Safe to call multiple times (no-op after first).
-fn ensure_sqlite_vec_registered() -> bool {
+pub fn ensure_sqlite_vec_registered() -> bool {
     SQLITE_VEC_INIT.call_once(|| unsafe {
         #[allow(clippy::missing_transmute_annotations)]
         let func = std::mem::transmute(sqlite_vec::sqlite3_vec_init as *const ());
@@ -207,7 +207,7 @@ impl VectorStore {
 }
 
 /// Verify that sqlite-vec functions are available on this connection.
-fn verify_vec_extension(conn: &Connection) -> bool {
+pub fn verify_vec_extension(conn: &Connection) -> bool {
     match conn.query_row("SELECT vec_version()", [], |row| row.get::<_, String>(0)) {
         Ok(version) => {
             info!("sqlite-vec {version} available");
