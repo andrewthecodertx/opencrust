@@ -2151,10 +2151,16 @@ impl AgentRuntime {
 
         let mut parts = vec![
             "=== DOCUMENT CONTEXT (retrieved) ===".to_string(),
-            "The following content has been retrieved from the document store. Use it to answer the user's question. Do NOT ask for a file path. Do NOT say you cannot access files.".to_string(),
+            "The following excerpts were retrieved from ingested documents. \
+             Use them to answer the question. Prefer this information over memory or general knowledge \
+             when it is relevant. Do NOT ask for a file path."
+                .to_string(),
         ];
         for chunk in &chunks {
-            parts.push(format!("--- {} ---\n{}", chunk.document_name, chunk.text));
+            parts.push(format!(
+                "--- Source: {} (relevance: {:.2}) ---\n{}",
+                chunk.document_name, chunk.score, chunk.text
+            ));
         }
         parts.push("=== END DOCUMENT CONTEXT ===".to_string());
         Some(parts.join("\n\n"))
@@ -2376,15 +2382,22 @@ fn bootstrap_instruction() -> String {
 /// Build the system prompt by combining all layers:
 /// 1. Base system prompt + tool guidance (from effective_system_prompt)
 /// 2. DNA content (personality)
-/// 3. Memory recall context
+/// 3. Past memory context (labeled, from semantic recall across sessions)
 /// 4. Session summary
+///
+/// RAG document context is intentionally NOT included here — it is injected
+/// directly into the user message by `inject_rag_into_content` so that models
+/// which de-prioritize system prompts (e.g. vLLM-hosted Qwen3) still see it.
+///
+/// Source priority rule injected into the prompt:
+///   documents (RAG, in user message) > memory > general knowledge
 ///
 /// When no DNA content exists, a bootstrap instruction is injected
 /// so the agent can collect user preferences on first interaction.
 fn build_system_prompt(
     effective_prompt: Option<&str>,
     dna_content: Option<&str>,
-    rag_context: Option<&str>,
+    _rag_context: Option<&str>,
     memory_context: Option<&str>,
     session_summary: Option<&str>,
     user_display_name: Option<&str>,
@@ -2398,33 +2411,46 @@ fn build_system_prompt(
     } else {
         parts.push(bootstrap_instruction());
     }
-    if let Some(rag) = rag_context {
-        parts.push(rag.to_string());
-    }
     if let Some(name) = user_display_name {
         parts.push(format!(
             "The user you are currently speaking with is named: {name}"
         ));
     }
     if let Some(ctx) = memory_context {
-        parts.push(ctx.to_string());
+        parts.push(format!(
+            "## Relevant memories from past conversations\n\
+             The following was recalled from previous sessions with this user. \
+             Use it for context and personalisation, but prefer document sources \
+             when they contradict each other.\n\n{ctx}"
+        ));
     }
     if let Some(summary) = session_summary {
-        parts.push(format!("Conversation summary:\n{summary}"));
+        parts.push(format!(
+            "## Conversation summary\n\
+             The earlier part of this session has been summarised below.\n\n{summary}"
+        ));
     }
     Some(parts.join("\n\n"))
 }
 
 /// Prepend RAG context directly into the user message so the model cannot ignore it.
 /// Only modifies Text messages; multipart (image) messages are returned unchanged.
+///
+/// The injected block is clearly labeled so the model knows the source is
+/// a retrieved document (not memory or general knowledge) and can cite it
+/// appropriately. Source priority: documents > memory > general knowledge.
 fn inject_rag_into_content(user_content: MessagePart, rag_context: Option<&str>) -> MessagePart {
     let Some(rag) = rag_context else {
         return user_content;
     };
     match user_content {
         MessagePart::Text(text) => MessagePart::Text(format!(
-            "[Retrieved document context — answer using this information, do not ask for a file path]:\n{}\n\n---\n\n{}",
-            rag, text
+            "{rag}\n\n\
+             [Answer the question below using the document context above as your primary source. \
+             If the document context does not cover the question, fall back to memory or general knowledge \
+             and say so briefly.]\n\n\
+             ---\n\n\
+             {text}"
         )),
         other => other,
     }
@@ -2462,7 +2488,8 @@ mod tests {
         assert!(result.contains("You are helpful."));
         assert!(result.contains("Be kind."));
         assert!(result.contains("User likes Rust."));
-        assert!(result.contains("Conversation summary:"));
+        assert!(result.contains("Relevant memories from past conversations"));
+        assert!(result.contains("Conversation summary"));
         assert!(result.contains("We discussed project setup."));
     }
 
@@ -2482,13 +2509,13 @@ mod tests {
             build_system_prompt(Some("Base."), Some("DNA."), None, None, None, None).unwrap();
         assert!(result.contains("Base."));
         assert!(result.contains("DNA."));
-        assert!(!result.contains("Conversation summary:"));
+        assert!(!result.contains("Conversation summary"));
     }
 
     #[test]
     fn build_system_prompt_summary_only() {
         let result = build_system_prompt(None, None, None, None, Some("A summary."), None).unwrap();
-        assert!(result.contains("Conversation summary:"));
+        assert!(result.contains("Conversation summary"));
         assert!(result.contains("A summary."));
     }
 
