@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 use dashmap::DashMap;
@@ -52,6 +53,8 @@ pub struct AgentRuntime {
     debug: bool,
     /// Debug info accumulated during message processing, keyed by session_id.
     debug_accumulator: Mutex<HashMap<String, Vec<String>>>,
+    /// Path to the document store DB for auto-RAG injection.
+    doc_db_path: Option<PathBuf>,
 }
 
 /// Per-session tool configuration set before processing a message.
@@ -75,6 +78,7 @@ impl AgentRuntime {
             max_tokens: None,
             max_context_tokens: None,
             recall_limit: 10,
+            doc_db_path: None,
             summarization_enabled: true,
             usage_accumulator: Mutex::new(HashMap::new()),
             session_tool_config: DashMap::new(),
@@ -748,10 +752,12 @@ impl AgentRuntime {
 
         let dna = self.dna_content();
         let base_prompt = self.base_prompt_with_tools();
+        let rag_context = self.auto_rag_context(user_text).await;
         let user_display = self.session_user_name(session_id);
         let system = build_system_prompt(
             base_prompt.as_deref(),
             dna.as_deref(),
+            rag_context.as_deref(),
             memory_context.as_deref(),
             None,
             user_display.as_deref(),
@@ -905,10 +911,12 @@ impl AgentRuntime {
 
         let dna = self.dna_content();
         let base_prompt = self.base_prompt_with_tools();
+        let rag_context = self.auto_rag_context(user_text).await;
         let user_display = self.session_user_name(session_id);
         let system = build_system_prompt(
             base_prompt.as_deref(),
             dna.as_deref(),
+            rag_context.as_deref(),
             memory_context.as_deref(),
             session_summary,
             user_display.as_deref(),
@@ -919,7 +927,10 @@ impl AgentRuntime {
         let mut messages: Vec<ChatMessage> = conversation_history.to_vec();
         messages.push(ChatMessage {
             role: ChatRole::User,
-            content: MessagePart::Text(user_text.to_string()),
+            content: inject_rag_into_content(
+                MessagePart::Text(user_text.to_string()),
+                rag_context.as_deref(),
+            ),
         });
 
         let max_ctx = self.max_context_tokens.unwrap_or(100_000);
@@ -938,6 +949,7 @@ impl AgentRuntime {
             build_system_prompt(
                 base_prompt.as_deref(),
                 dna.as_deref(),
+                rag_context.as_deref(),
                 memory_context.as_deref(),
                 new_summary.as_deref(),
                 user_display.as_deref(),
@@ -1069,10 +1081,12 @@ impl AgentRuntime {
 
         let dna = self.dna_content();
         let base_prompt = self.base_prompt_with_tools();
+        let rag_context = self.auto_rag_context(memory_text).await;
         let user_display = self.session_user_name(session_id);
         let system = build_system_prompt(
             base_prompt.as_deref(),
             dna.as_deref(),
+            rag_context.as_deref(),
             memory_context.as_deref(),
             None,
             user_display.as_deref(),
@@ -1083,7 +1097,7 @@ impl AgentRuntime {
         let mut messages: Vec<ChatMessage> = conversation_history.to_vec();
         messages.push(ChatMessage {
             role: ChatRole::User,
-            content: user_content,
+            content: inject_rag_into_content(user_content, rag_context.as_deref()),
         });
 
         // Trim conversation history to fit context window
@@ -1282,10 +1296,12 @@ impl AgentRuntime {
 
         let dna = self.dna_content();
         let base_prompt = self.base_prompt_with_tools();
+        let rag_context = self.auto_rag_context(memory_text).await;
         let user_display = self.session_user_name(session_id);
         let system = build_system_prompt(
             base_prompt.as_deref(),
             dna.as_deref(),
+            rag_context.as_deref(),
             memory_context.as_deref(),
             None,
             user_display.as_deref(),
@@ -1296,7 +1312,7 @@ impl AgentRuntime {
         let mut messages: Vec<ChatMessage> = conversation_history.to_vec();
         messages.push(ChatMessage {
             role: ChatRole::User,
-            content: user_content,
+            content: inject_rag_into_content(user_content, rag_context.as_deref()),
         });
 
         let max_ctx = self.max_context_tokens.unwrap_or(100_000);
@@ -1583,10 +1599,12 @@ impl AgentRuntime {
 
         let dna = self.dna_content();
         let base_prompt = self.base_prompt_with_tools();
+        let rag_context = self.auto_rag_context(memory_text).await;
         let user_display = self.session_user_name(session_id);
         let system = build_system_prompt(
             base_prompt.as_deref(),
             dna.as_deref(),
+            rag_context.as_deref(),
             memory_context.as_deref(),
             session_summary,
             user_display.as_deref(),
@@ -1597,7 +1615,7 @@ impl AgentRuntime {
         let mut messages: Vec<ChatMessage> = conversation_history.to_vec();
         messages.push(ChatMessage {
             role: ChatRole::User,
-            content: user_content,
+            content: inject_rag_into_content(user_content, rag_context.as_deref()),
         });
 
         let max_ctx = self.max_context_tokens.unwrap_or(100_000);
@@ -1617,6 +1635,7 @@ impl AgentRuntime {
             build_system_prompt(
                 base_prompt.as_deref(),
                 dna.as_deref(),
+                rag_context.as_deref(),
                 memory_context.as_deref(),
                 new_summary.as_deref(),
                 user_display.as_deref(),
@@ -1758,10 +1777,12 @@ impl AgentRuntime {
 
         let dna = self.dna_content();
         let base_prompt = self.base_prompt_with_tools();
+        let rag_context = self.auto_rag_context(memory_text).await;
         let user_display = self.session_user_name(session_id);
         let system = build_system_prompt(
             base_prompt.as_deref(),
             dna.as_deref(),
+            rag_context.as_deref(),
             memory_context.as_deref(),
             session_summary,
             user_display.as_deref(),
@@ -1772,7 +1793,7 @@ impl AgentRuntime {
         let mut messages: Vec<ChatMessage> = conversation_history.to_vec();
         messages.push(ChatMessage {
             role: ChatRole::User,
-            content: user_content,
+            content: inject_rag_into_content(user_content, rag_context.as_deref()),
         });
 
         let max_ctx = self.max_context_tokens.unwrap_or(100_000);
@@ -1791,6 +1812,7 @@ impl AgentRuntime {
             build_system_prompt(
                 base_prompt.as_deref(),
                 dna.as_deref(),
+                rag_context.as_deref(),
                 memory_context.as_deref(),
                 new_summary.as_deref(),
                 user_display.as_deref(),
@@ -2079,6 +2101,64 @@ impl AgentRuntime {
             .as_ref()
             .map(|provider| provider.model().to_string())
     }
+
+    /// Set the path to the document store for auto-RAG context injection.
+    pub fn set_doc_db_path(&mut self, path: PathBuf) {
+        self.doc_db_path = Some(path);
+    }
+
+    /// Auto-inject RAG context: embed the user query, search the document store,
+    /// and return a formatted context string if any chunks score above the threshold.
+    ///
+    /// Returns `None` when no embedding provider is set, no doc DB path is configured,
+    /// or no chunks score above the similarity threshold.
+    async fn auto_rag_context(&self, user_text: &str) -> Option<String> {
+        let db_path = self.doc_db_path.as_ref()?;
+        if !db_path.exists() {
+            warn!("auto_rag: doc_db_path does not exist: {:?}", db_path);
+            return None;
+        }
+
+        const THRESHOLD: f64 = 0.42;
+        const TOP_K: usize = 3;
+
+        let store = opencrust_db::DocumentStore::open(db_path).ok()?;
+
+        let chunks = if let Some(embedding) = self.embed_query(user_text).await {
+            info!(
+                "auto_rag: embedded query ({} dims), searching top={} threshold={}",
+                embedding.len(),
+                TOP_K,
+                THRESHOLD
+            );
+            let results = store
+                .search_chunks(&embedding, TOP_K, THRESHOLD)
+                .unwrap_or_default();
+            info!("auto_rag: found {} chunks above threshold", results.len());
+            for c in &results {
+                info!("auto_rag: chunk '{}' score={:.4}", c.document_name, c.score);
+            }
+            results
+        } else {
+            warn!("auto_rag: no embedding provider, skipping");
+            // No embedding provider — skip auto-injection (keyword fallback via tool is enough)
+            return None;
+        };
+
+        if chunks.is_empty() {
+            return None;
+        }
+
+        let mut parts = vec![
+            "=== DOCUMENT CONTEXT (retrieved) ===".to_string(),
+            "The following content has been retrieved from the document store. Use it to answer the user's question. Do NOT ask for a file path. Do NOT say you cannot access files.".to_string(),
+        ];
+        for chunk in &chunks {
+            parts.push(format!("--- {} ---\n{}", chunk.document_name, chunk.text));
+        }
+        parts.push("=== END DOCUMENT CONTEXT ===".to_string());
+        Some(parts.join("\n\n"))
+    }
 }
 
 impl Default for AgentRuntime {
@@ -2304,6 +2384,7 @@ fn bootstrap_instruction() -> String {
 fn build_system_prompt(
     effective_prompt: Option<&str>,
     dna_content: Option<&str>,
+    rag_context: Option<&str>,
     memory_context: Option<&str>,
     session_summary: Option<&str>,
     user_display_name: Option<&str>,
@@ -2317,6 +2398,9 @@ fn build_system_prompt(
     } else {
         parts.push(bootstrap_instruction());
     }
+    if let Some(rag) = rag_context {
+        parts.push(rag.to_string());
+    }
     if let Some(name) = user_display_name {
         parts.push(format!(
             "The user you are currently speaking with is named: {name}"
@@ -2329,6 +2413,21 @@ fn build_system_prompt(
         parts.push(format!("Conversation summary:\n{summary}"));
     }
     Some(parts.join("\n\n"))
+}
+
+/// Prepend RAG context directly into the user message so the model cannot ignore it.
+/// Only modifies Text messages; multipart (image) messages are returned unchanged.
+fn inject_rag_into_content(user_content: MessagePart, rag_context: Option<&str>) -> MessagePart {
+    let Some(rag) = rag_context else {
+        return user_content;
+    };
+    match user_content {
+        MessagePart::Text(text) => MessagePart::Text(format!(
+            "[Retrieved document context — answer using this information, do not ask for a file path]:\n{}\n\n---\n\n{}",
+            rag, text
+        )),
+        other => other,
+    }
 }
 
 fn extract_text(content: &[ContentBlock]) -> String {
@@ -2359,7 +2458,7 @@ mod tests {
         let dna = Some("Be kind.");
         let mem = Some("User likes Rust.");
         let sum = Some("We discussed project setup.");
-        let result = build_system_prompt(base, dna, mem, sum, None).unwrap();
+        let result = build_system_prompt(base, dna, None, mem, sum, None).unwrap();
         assert!(result.contains("You are helpful."));
         assert!(result.contains("Be kind."));
         assert!(result.contains("User likes Rust."));
@@ -2371,7 +2470,7 @@ mod tests {
     fn build_system_prompt_base_before_dna() {
         let base = Some("You are helpful.");
         let dna = Some("You are a pirate.");
-        let result = build_system_prompt(base, dna, None, None, None).unwrap();
+        let result = build_system_prompt(base, dna, None, None, None, None).unwrap();
         let base_pos = result.find("helpful").unwrap();
         let dna_pos = result.find("pirate").unwrap();
         assert!(base_pos < dna_pos);
@@ -2379,7 +2478,8 @@ mod tests {
 
     #[test]
     fn build_system_prompt_no_summary() {
-        let result = build_system_prompt(Some("Base."), Some("DNA."), None, None, None).unwrap();
+        let result =
+            build_system_prompt(Some("Base."), Some("DNA."), None, None, None, None).unwrap();
         assert!(result.contains("Base."));
         assert!(result.contains("DNA."));
         assert!(!result.contains("Conversation summary:"));
@@ -2387,14 +2487,14 @@ mod tests {
 
     #[test]
     fn build_system_prompt_summary_only() {
-        let result = build_system_prompt(None, None, None, Some("A summary."), None).unwrap();
+        let result = build_system_prompt(None, None, None, None, Some("A summary."), None).unwrap();
         assert!(result.contains("Conversation summary:"));
         assert!(result.contains("A summary."));
     }
 
     #[test]
     fn build_system_prompt_bootstrap_when_no_dna() {
-        let result = build_system_prompt(None, None, None, None, None).unwrap();
+        let result = build_system_prompt(None, None, None, None, None, None).unwrap();
         assert!(result.contains("have not been personalized yet"));
         assert!(result.contains("dna.md"));
     }
@@ -2402,7 +2502,7 @@ mod tests {
     #[test]
     fn build_system_prompt_dna_only() {
         let result =
-            build_system_prompt(None, Some("You are a pirate."), None, None, None).unwrap();
+            build_system_prompt(None, Some("You are a pirate."), None, None, None, None).unwrap();
         assert!(result.contains("You are a pirate."));
     }
 
@@ -2411,6 +2511,7 @@ mod tests {
         let result = build_system_prompt(
             Some("You are helpful."),
             Some("DNA content."),
+            None,
             None,
             None,
             Some("Alice"),
@@ -2422,7 +2523,8 @@ mod tests {
 
     #[test]
     fn build_system_prompt_user_name_none_no_effect() {
-        let result = build_system_prompt(Some("Base."), Some("DNA."), None, None, None).unwrap();
+        let result =
+            build_system_prompt(Some("Base."), Some("DNA."), None, None, None, None).unwrap();
         assert!(!result.contains("currently speaking with"));
     }
 
