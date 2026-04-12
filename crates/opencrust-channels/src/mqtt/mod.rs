@@ -22,6 +22,7 @@ use opencrust_common::{Message, MessageContent, Result};
 ///
 /// Arguments: `(user_id, session_id, text, delta_tx)`.
 /// * `delta_tx` is always `None` — MQTT does not support message streaming edits.
+///
 /// Return `Err("__blocked__")` to silently drop the message.
 pub type MqttOnMessageFn = Arc<
     dyn Fn(
@@ -411,13 +412,12 @@ async fn handle_publish(
         match on_message(user_id, session_id, text, None).await {
             Ok(response) => {
                 let reply_text = response.text().to_string();
-                if !reply_text.is_empty() {
-                    if let Err(e) = client
+                if !reply_text.is_empty()
+                    && let Err(e) = client
                         .publish(&reply_topic, qos, false, reply_text.as_bytes())
                         .await
-                    {
-                        warn!("mqtt '{channel_name}': publish reply failed: {e}");
-                    }
+                {
+                    warn!("mqtt '{channel_name}': publish reply failed: {e}");
                 }
             }
             Err(e) if e == "__blocked__" => {
@@ -436,7 +436,6 @@ async fn handle_publish(
 mod tests {
     use super::*;
     use config::MqttMode;
-    use std::collections::HashMap;
 
     fn make_config(mode: MqttMode) -> MqttConfig {
         MqttConfig {

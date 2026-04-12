@@ -3,20 +3,15 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 /// Payload interpretation mode for the MQTT channel.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub enum MqttMode {
     /// Every payload is treated as plain-text.  One session per channel.
     Simple,
     /// Payload must be JSON `{"user_id":"…","text":"…"}`.  One session per user_id.
     Multi,
     /// Auto-detect: JSON with both `user_id` and `text` → Multi, otherwise → Simple.
+    #[default]
     Auto,
-}
-
-impl Default for MqttMode {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 /// Typed configuration for one MQTT channel, extracted from the generic
