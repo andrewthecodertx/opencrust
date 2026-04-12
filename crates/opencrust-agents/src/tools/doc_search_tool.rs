@@ -83,18 +83,24 @@ impl Tool for DocSearchTool {
         let store = DocumentStore::open(&self.db_path)
             .map_err(|e| Error::Agent(format!("failed to open document store: {e}")))?;
 
-        let chunks = if let Some(embed_fn) = &self.embed_fn {
-            let query_embedding = embed_fn(query)
-                .await
-                .map_err(|e| Error::Agent(format!("failed to embed query: {e}")))?;
-            store
-                .search_chunks(&query_embedding, limit, DEFAULT_MIN_SIMILARITY)
-                .map_err(|e| Error::Agent(format!("document search failed: {e}")))?
+        let query_embedding = if let Some(embed_fn) = &self.embed_fn {
+            Some(
+                embed_fn(query)
+                    .await
+                    .map_err(|e| Error::Agent(format!("failed to embed query: {e}")))?,
+            )
         } else {
-            store
-                .keyword_search_chunks(query, limit)
-                .map_err(|e| Error::Agent(format!("keyword search failed: {e}")))?
+            None
         };
+
+        let chunks = store
+            .hybrid_search_chunks(
+                query,
+                query_embedding.as_deref(),
+                limit,
+                DEFAULT_MIN_SIMILARITY,
+            )
+            .map_err(|e| Error::Agent(format!("document search failed: {e}")))?;
 
         if chunks.is_empty() {
             return Ok(ToolOutput::success(

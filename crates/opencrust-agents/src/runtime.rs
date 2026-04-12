@@ -2171,19 +2171,20 @@ impl AgentRuntime {
         const THRESHOLD: f64 = 0.42;
         const TOP_K: usize = 3;
 
-        let chunks = if let Some(embedding) = self.embed_query(user_text).await {
-            let results = store
-                .search_chunks(&embedding, TOP_K, THRESHOLD)
-                .unwrap_or_default();
-            info!("auto_rag: found {} chunks above threshold", results.len());
-            for c in &results {
-                tracing::debug!("auto_rag: chunk '{}' score={:.4}", c.document_name, c.score);
-            }
-            results
-        } else {
+        let query_embedding = self.embed_query(user_text).await;
+        if query_embedding.is_none() {
             warn!("auto_rag: no embedding provider, skipping");
             return None;
-        };
+        }
+
+        let chunks = store
+            .hybrid_search_chunks(user_text, query_embedding.as_deref(), TOP_K, THRESHOLD)
+            .unwrap_or_default();
+
+        info!("auto_rag: found {} chunks above threshold", chunks.len());
+        for c in &chunks {
+            tracing::debug!("auto_rag: chunk '{}' score={:.4}", c.document_name, c.score);
+        }
 
         if chunks.is_empty() {
             return None;
