@@ -85,7 +85,7 @@ Linux (x86_64, aarch64), macOS (Intel, Apple Silicon) और Windows (x86_64) �
 | **Multi-agent routing** | हाँ (named agents) | हाँ (agentId) | नहीं |
 | **Session orchestration** | हाँ | हाँ | नहीं |
 | **MCP support** | Stdio + HTTP | Stdio + HTTP | Stdio |
-| **Channels** | 8 | 6+ | 4 |
+| **Channels** | 9 | 6+ | 4 |
 | **LLM providers** | 15 | 10+ | 22+ |
 | **Pre-compiled binary** | हाँ | N/A (Node.js) | Source से Build |
 | **Config hot-reload** | हाँ | नहीं | नहीं |
