@@ -525,37 +525,127 @@ impl DocumentStore {
         Ok(scored.into_iter().map(|(_, chunk)| chunk).collect())
     }
 
-    /// Search document chunks by keyword (case-insensitive LIKE match).
+    /// Search document chunks by keyword with term-frequency ranking.
     ///
-    /// Used as a fallback when no embedding provider is configured.
+    /// Candidates are found via `LIKE` (broad net), then ranked by
+    /// `text_match_score` so partial-term matches are ordered by relevance
+    /// rather than all returning `score = 1.0`. Chunks with zero term overlap
+    /// are excluded.
     pub fn keyword_search_chunks(&self, query: &str, limit: usize) -> Result<Vec<DocumentChunk>> {
         let conn = self.connection()?;
-        let pattern = format!("%{}%", query.replace('%', "\\%").replace('_', "\\_"));
+
+        // Broaden the LIKE pattern to any chunk that contains at least one
+        // query word, then rank in Rust where we have full scoring logic.
+        let terms: Vec<String> = query
+            .split_whitespace()
+            .map(|t| t.to_lowercase())
+            .filter(|t| !t.is_empty())
+            .collect();
+
+        if terms.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Build OR-of-LIKE conditions: text LIKE '%term1%' OR text LIKE '%term2%' ...
+        let conditions: String = terms
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("LOWER(c.text) LIKE ?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+
+        let sql = format!(
+            "SELECT c.id, c.document_id, d.name, c.chunk_index, c.text
+             FROM document_chunks c
+             JOIN documents d ON d.id = c.document_id
+             WHERE {conditions}
+             LIMIT ?{}",
+            terms.len() + 1
+        );
+
         let mut stmt = conn
-            .prepare(
-                "SELECT c.id, c.document_id, d.name, c.chunk_index, c.text
-                 FROM document_chunks c
-                 JOIN documents d ON d.id = c.document_id
-                 WHERE c.text LIKE ?1 ESCAPE '\\'
-                 LIMIT ?2",
-            )
+            .prepare(&sql)
             .map_err(|e| Error::Database(format!("failed to prepare keyword search: {e}")))?;
 
+        // Bind each term pattern then the limit.
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = terms
+            .iter()
+            .map(|t| {
+                let p = format!("%{}%", t.replace('%', "\\%").replace('_', "\\_"));
+                Box::new(p) as Box<dyn rusqlite::ToSql>
+            })
+            .collect();
+        params.push(Box::new(limit as i64 * 4)); // fetch extra for post-ranking
+
+        let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
         let rows = stmt
-            .query_map(rusqlite::params![pattern, limit as i64], |row| {
+            .query_map(param_refs.as_slice(), |row| {
                 Ok(DocumentChunk {
                     id: row.get(0)?,
                     document_id: row.get(1)?,
                     document_name: row.get(2)?,
                     chunk_index: row.get::<_, i64>(3)? as usize,
                     text: row.get(4)?,
-                    score: 1.0,
+                    score: 0.0,
                 })
             })
             .map_err(|e| Error::Database(format!("failed to execute keyword search: {e}")))?;
 
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| Error::Database(format!("failed to read keyword search rows: {e}")))
+        let mut scored: Vec<DocumentChunk> = rows
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Database(format!("failed to read keyword search rows: {e}")))?
+            .into_iter()
+            .filter_map(|mut chunk| {
+                let s = text_match_score(query, &chunk.text);
+                if s > 0.0 {
+                    chunk.score = s as f64;
+                    Some(chunk)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+        scored.truncate(limit);
+        Ok(scored)
+    }
+
+    /// Hybrid search: combine vector similarity with text match scoring.
+    ///
+    /// When an embedding is available, the final score is a weighted blend of
+    /// cosine similarity (0.8) and term-frequency text match (0.2), improving
+    /// results when the vector model underweights exact keyword occurrences.
+    ///
+    /// When no embedding is provided, falls back to `keyword_search_chunks`.
+    pub fn hybrid_search_chunks(
+        &self,
+        query: &str,
+        query_embedding: Option<&[f32]>,
+        limit: usize,
+        min_similarity: f64,
+    ) -> Result<Vec<DocumentChunk>> {
+        let Some(embedding) = query_embedding else {
+            return self.keyword_search_chunks(query, limit);
+        };
+
+        // Get vector candidates (fetch extra to re-rank).
+        let fetch_k = (limit * 2).max(limit + 8);
+        let mut candidates = self.search_chunks(embedding, fetch_k, min_similarity * 0.8)?;
+
+        // Re-score with hybrid: 0.8 * vector + 0.2 * text_match.
+        for chunk in &mut candidates {
+            let text_score = text_match_score(query, &chunk.text) as f64;
+            chunk.score = chunk.score * 0.8 + text_score * 0.2;
+        }
+
+        candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+
+        // Apply final similarity threshold and cap at limit.
+        candidates.retain(|c| c.score >= min_similarity);
+        candidates.truncate(limit);
+        Ok(candidates)
     }
 
     /// List all documents with their metadata.
@@ -696,6 +786,27 @@ fn blob_to_embedding(blob: &[u8]) -> Result<Vec<f32>> {
         out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
     }
     Ok(out)
+}
+
+/// Term-frequency text match score in [0, 1].
+///
+/// Returns 1.0 if the full query appears verbatim (case-insensitive),
+/// otherwise returns the fraction of query terms found in `content`.
+fn text_match_score(query: &str, content: &str) -> f32 {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return 0.0;
+    }
+    let content_lc = content.to_lowercase();
+    if content_lc.contains(&query) {
+        return 1.0;
+    }
+    let terms: Vec<&str> = query.split_whitespace().filter(|s| !s.is_empty()).collect();
+    if terms.is_empty() {
+        return 0.0;
+    }
+    let matches = terms.iter().filter(|t| content_lc.contains(**t)).count();
+    matches as f32 / terms.len() as f32
 }
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
