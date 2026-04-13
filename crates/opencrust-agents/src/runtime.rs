@@ -25,6 +25,10 @@ use crate::tools::{Tool, ToolContext, ToolOutput};
 const MAX_TOOL_ITERATIONS: usize = 10;
 /// Minimum number of tool calls in a turn before the agent is nudged to consider create_skill.
 const SKILL_REFLECTION_THRESHOLD: usize = 3;
+/// Default max skills injected per turn when semantic retrieval is active.
+const DEFAULT_SKILL_RECALL_LIMIT: usize = 5;
+/// Minimum cosine similarity for a skill to be considered relevant (0–1).
+const SKILL_SIMILARITY_THRESHOLD: f64 = 0.25;
 
 /// Default base system prompt when none is configured.
 const DEFAULT_BASE_SYSTEM_PROMPT: &str = "\
@@ -32,6 +36,12 @@ You are a personal AI assistant powered by OpenCrust. You help the user by answe
 questions, searching their documents, and executing tasks using your available tools. \
 Be concise and accurate. If you don't know something, say so. Do not make up information. \
 Always respond in the same language the user writes in.";
+
+/// A skill with its pre-computed embedding for semantic retrieval.
+struct IndexedSkill {
+    skill: opencrust_skills::SkillDefinition,
+    embedding: Vec<f32>,
+}
 
 /// Manages agent sessions, tool execution, and LLM provider routing.
 pub struct AgentRuntime {
@@ -42,7 +52,12 @@ pub struct AgentRuntime {
     tools: Vec<Box<dyn Tool>>,
     system_prompt: Option<String>,
     dna_content: RwLock<Option<String>>,
+    /// Flat skills block injected when embedding provider is absent or skill count ≤ recall limit.
     skills_content: RwLock<Option<String>>,
+    /// Semantic skill index — populated when embedding provider is present.
+    /// When non-empty, `skills_content` is unused and retrieval is semantic.
+    skills_index: RwLock<Vec<IndexedSkill>>,
+    skill_recall_limit: usize,
     max_tokens: Option<u32>,
     max_context_tokens: Option<usize>,
     recall_limit: usize,
@@ -87,6 +102,8 @@ impl AgentRuntime {
             system_prompt: None,
             dna_content: RwLock::new(None),
             skills_content: RwLock::new(None),
+            skills_index: RwLock::new(Vec::new()),
+            skill_recall_limit: DEFAULT_SKILL_RECALL_LIMIT,
             max_tokens: None,
             max_context_tokens: None,
             recall_limit: 10,
@@ -140,9 +157,121 @@ impl AgentRuntime {
         *self.skills_content.write().unwrap() = content;
     }
 
-    /// Get a clone of the current skills content.
+    /// Get a clone of the current flat skills content (fallback path).
     pub fn skills_content(&self) -> Option<String> {
         self.skills_content.read().unwrap().clone()
+    }
+
+    /// Override the semantic skill recall limit (default: 5).
+    pub fn set_skill_recall_limit(&mut self, limit: usize) {
+        self.skill_recall_limit = limit;
+    }
+
+    /// Index skills for semantic retrieval. When an embedding provider is configured and
+    /// the skill count exceeds `skill_recall_limit`, each skill is embedded and stored in
+    /// `skills_index` so only the most relevant ones are injected per turn.
+    ///
+    /// Falls back to injecting all skills as a flat block when:
+    /// - no embedding provider is configured, or
+    /// - skill count ≤ `skill_recall_limit` (embedding call would be wasted).
+    pub async fn index_skills(&self, skills: Vec<opencrust_skills::SkillDefinition>) {
+        // Clear both stores first.
+        *self.skills_index.write().unwrap() = Vec::new();
+
+        if skills.is_empty() {
+            *self.skills_content.write().unwrap() = None;
+            return;
+        }
+
+        // If few skills or no embedding provider: inject all (no semantic search needed).
+        if skills.len() <= self.skill_recall_limit || self.embeddings.is_none() {
+            *self.skills_content.write().unwrap() = Some(skill_prompt_block(&skills));
+            info!(
+                "skills: injecting all {} skill(s) (below recall limit or no embedder)",
+                skills.len()
+            );
+            return;
+        }
+
+        // Embed each skill's compact text representation.
+        let mut indexed: Vec<IndexedSkill> = Vec::with_capacity(skills.len());
+        for skill in &skills {
+            let text = skill_embed_text(skill);
+            match self.embed_document(&text).await {
+                Some(embedding) => indexed.push(IndexedSkill {
+                    skill: skill.clone(),
+                    embedding,
+                }),
+                None => {
+                    warn!(
+                        "skills: failed to embed '{}', falling back to inject-all",
+                        skill.frontmatter.name
+                    );
+                    // Partial failure → fall back to inject-all.
+                    *self.skills_content.write().unwrap() = Some(skill_prompt_block(&skills));
+                    return;
+                }
+            }
+        }
+
+        info!(
+            "skills: indexed {} skill(s) for semantic retrieval (recall limit: {})",
+            indexed.len(),
+            self.skill_recall_limit
+        );
+        *self.skills_index.write().unwrap() = indexed;
+        *self.skills_content.write().unwrap() = None;
+    }
+
+    /// Return the skills block to inject into the system prompt for a given user message.
+    ///
+    /// When a semantic index is available, embeds the query and returns the top-K most
+    /// relevant skills. Falls back to the flat block when no index exists.
+    pub async fn relevant_skills_content(&self, user_text: &str) -> Option<String> {
+        // Clone the indexed data while holding the lock, then release it before
+        // any await point so the non-Send RwLockReadGuard doesn't cross a yield.
+        let entries: Vec<(Vec<f32>, opencrust_skills::SkillDefinition)> = {
+            let index = self.skills_index.read().unwrap();
+            if index.is_empty() {
+                return self.skills_content();
+            }
+            index
+                .iter()
+                .map(|e| (e.embedding.clone(), e.skill.clone()))
+                .collect()
+        };
+
+        let query_emb = match self.embed_query(user_text).await {
+            Some(e) => e,
+            None => return self.skills_content(),
+        };
+
+        let mut scored: Vec<(f64, usize)> = entries
+            .iter()
+            .enumerate()
+            .map(|(i, (emb, _))| (cosine_similarity(&query_emb, emb), i))
+            .collect();
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        let top: Vec<&opencrust_skills::SkillDefinition> = scored
+            .iter()
+            .take(self.skill_recall_limit)
+            .filter(|(score, _)| *score >= SKILL_SIMILARITY_THRESHOLD)
+            .map(|(_, i)| &entries[*i].1)
+            .collect();
+
+        tracing::debug!(
+            "skills: semantic retrieval — top {} of {} skill(s) above threshold {:.2}",
+            top.len(),
+            entries.len(),
+            SKILL_SIMILARITY_THRESHOLD
+        );
+
+        if top.is_empty() {
+            return None;
+        }
+
+        Some(skill_prompt_block_refs(&top))
     }
 
     pub fn set_max_tokens(&mut self, max_tokens: u32) {
@@ -800,7 +929,7 @@ impl AgentRuntime {
         };
 
         let dna = self.dna_content();
-        let skills = self.skills_content();
+        let skills = self.relevant_skills_content(user_text).await;
         let base_prompt = self.base_prompt_with_tools();
         let rag_context = self.auto_rag_context(user_text).await;
         let user_display = self.session_user_name(session_id);
@@ -961,7 +1090,7 @@ impl AgentRuntime {
         };
 
         let dna = self.dna_content();
-        let skills = self.skills_content();
+        let skills = self.relevant_skills_content(user_text).await;
         let base_prompt = self.base_prompt_with_tools();
         let rag_context = self.auto_rag_context(user_text).await;
         let user_display = self.session_user_name(session_id);
@@ -1134,7 +1263,7 @@ impl AgentRuntime {
         };
 
         let dna = self.dna_content();
-        let skills = self.skills_content();
+        let skills = self.relevant_skills_content(memory_text).await;
         let base_prompt = self.base_prompt_with_tools();
         let rag_context = self.auto_rag_context(memory_text).await;
         let user_display = self.session_user_name(session_id);
@@ -1365,7 +1494,7 @@ impl AgentRuntime {
         };
 
         let dna = self.dna_content();
-        let skills = self.skills_content();
+        let skills = self.relevant_skills_content(memory_text).await;
         let base_prompt = self.base_prompt_with_tools();
         let rag_context = self.auto_rag_context(memory_text).await;
         let user_display = self.session_user_name(session_id);
@@ -1693,7 +1822,7 @@ impl AgentRuntime {
         };
 
         let dna = self.dna_content();
-        let skills = self.skills_content();
+        let skills = self.relevant_skills_content(memory_text).await;
         let base_prompt = self.base_prompt_with_tools();
         let rag_context = self.auto_rag_context(memory_text).await;
         let user_display = self.session_user_name(session_id);
@@ -1887,7 +2016,7 @@ impl AgentRuntime {
         };
 
         let dna = self.dna_content();
-        let skills = self.skills_content();
+        let skills = self.relevant_skills_content(memory_text).await;
         let base_prompt = self.base_prompt_with_tools();
         let rag_context = self.auto_rag_context(memory_text).await;
         let user_display = self.session_user_name(session_id);
@@ -2655,6 +2784,67 @@ fn extract_text(content: &[ContentBlock]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Cosine similarity between two embedding vectors. Returns 0.0 when inputs are
+/// empty, different lengths, or either magnitude is zero.
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
+    if a.is_empty() || b.is_empty() || a.len() != b.len() {
+        return 0.0;
+    }
+    let dot: f64 = a
+        .iter()
+        .zip(b.iter())
+        .map(|(x, y)| *x as f64 * *y as f64)
+        .sum();
+    let mag_a: f64 = a.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
+    let mag_b: f64 = b.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
+    if mag_a == 0.0 || mag_b == 0.0 {
+        return 0.0;
+    }
+    dot / (mag_a * mag_b)
+}
+
+/// Compact text representation of a skill used for embedding at index time.
+/// Combines name, description, and triggers so the vector captures intent.
+fn skill_embed_text(skill: &opencrust_skills::SkillDefinition) -> String {
+    let fm = &skill.frontmatter;
+    let mut parts = vec![fm.name.clone(), fm.description.clone()];
+    if !fm.triggers.is_empty() {
+        parts.push(fm.triggers.join(" "));
+    }
+    parts.join(" | ")
+}
+
+/// Format an owned slice of `SkillDefinition`s into the prompt block injected into the
+/// system prompt. Mirrors `build_skill_block` in bootstrap.rs.
+fn skill_prompt_block(skills: &[opencrust_skills::SkillDefinition]) -> String {
+    let refs: Vec<&opencrust_skills::SkillDefinition> = skills.iter().collect();
+    skill_prompt_block_refs(&refs)
+}
+
+/// Format a slice of `SkillDefinition` references into the prompt block.
+fn skill_prompt_block_refs(skills: &[&opencrust_skills::SkillDefinition]) -> String {
+    if skills.is_empty() {
+        return String::new();
+    }
+    let mut block = String::from("# Active Skills\n");
+    for skill in skills {
+        block.push_str(&format!(
+            "\n## {}\n{}\n",
+            skill.frontmatter.name, skill.frontmatter.description
+        ));
+        if !skill.frontmatter.triggers.is_empty() {
+            block.push_str(&format!(
+                "Triggers: {}\n",
+                skill.frontmatter.triggers.join(", ")
+            ));
+        }
+        block.push('\n');
+        block.push_str(&skill.body);
+        block.push('\n');
+    }
+    block
 }
 
 #[cfg(test)]
