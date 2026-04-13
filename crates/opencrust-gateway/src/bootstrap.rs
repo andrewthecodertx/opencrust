@@ -4,9 +4,9 @@ use std::sync::{Arc, Mutex};
 
 use opencrust_agents::tools::Tool;
 use opencrust_agents::{
-    AgentRuntime, AnthropicProvider, BashTool, ChatMessage, CohereEmbeddingProvider, DocSearchTool,
-    FileReadTool, FileWriteTool, GoogleSearchTool, McpManager, OllamaEmbeddingProvider,
-    OllamaProvider, OpenAiProvider, WebFetchTool, WebSearchTool,
+    AgentRuntime, AnthropicProvider, BashTool, ChatMessage, CohereEmbeddingProvider,
+    CreateSkillTool, DocSearchTool, FileReadTool, FileWriteTool, GoogleSearchTool, McpManager,
+    OllamaEmbeddingProvider, OllamaProvider, OpenAiProvider, WebFetchTool, WebSearchTool,
 };
 use opencrust_channels::{
     ChannelResponse, MediaAttachment, MqttChannel, MqttOnMessageFn, SlackChannel, SlackGroupFilter,
@@ -413,6 +413,16 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     runtime.register_tool(Box::new(FileReadTool::new(None)));
     runtime.register_tool(Box::new(FileWriteTool::new(None)));
     runtime.register_tool(Box::new(WebFetchTool::new(None)));
+
+    // Self-learning: agent can save reusable skills discovered during conversations.
+    // Enabled by default; set `agent.self_learning: false` in config.yml to disable.
+    if config.agent.self_learning.unwrap_or(true) {
+        let skills_dir = opencrust_config::ConfigLoader::default_config_dir().join("skills");
+        runtime.register_tool(Box::new(CreateSkillTool::new(skills_dir)));
+        info!("create_skill tool registered (self-learning enabled)");
+    } else {
+        info!("self-learning disabled via config (agent.self_learning: false)");
+    }
 
     // Web search (Brave or Google)
     let search_config = config.tools.web_search.as_ref();
