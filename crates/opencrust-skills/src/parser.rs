@@ -63,11 +63,19 @@ pub fn validate_skill(skill: &SkillDefinition) -> Result<()> {
     if name.is_empty() {
         return Err(Error::Skill("skill name must not be empty".into()));
     }
-    // Name must be alphanumeric + hyphens
-    if !name.chars().all(|c| c.is_alphanumeric() || c == '-') {
+    // Name must be safe for use as a filename on all major filesystems.
+    // Allow any Unicode letter/digit (including Thai, CJK, Arabic, etc.),
+    // hyphens, and underscores. Reject whitespace, path separators, and
+    // ASCII control/special characters that break filenames.
+    const FORBIDDEN: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|', '\0', '.'];
+    if name
+        .chars()
+        .any(|c| c.is_whitespace() || FORBIDDEN.contains(&c))
+    {
         return Err(Error::Skill(format!(
-            "skill name '{}' contains invalid characters (only alphanumeric and hyphens allowed)",
-            name
+            "skill name '{name}' contains invalid characters. \
+             Use letters (any language), digits, hyphens, or underscores. \
+             Whitespace and path separators are not allowed."
         )));
     }
     if skill.frontmatter.description.is_empty() {

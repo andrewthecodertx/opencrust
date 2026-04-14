@@ -65,7 +65,7 @@ impl Tool for CreateSkillTool {
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "Unique skill name in hyphen-case (e.g. 'disk-cleanup'). Only alphanumeric and hyphens."
+                    "description": "Unique skill name used as the filename (e.g. 'disk-cleanup', 'ล้างดิสก์', '清理磁盘'). Letters from any language, digits, hyphens, and underscores are allowed. No spaces or path separators."
                 },
                 "description": {
                     "type": "string",
