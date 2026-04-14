@@ -655,7 +655,7 @@ impl AgentRuntime {
         Some(format!(
             "\n\n---\n\
              *{tool_call_count} tools used — if this was a reusable workflow, \
-             consider saving it with `create_skill` before this conversation ends.*"
+             ask the user if they want to save it as a skill before this conversation ends.*"
         ))
     }
 
