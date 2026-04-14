@@ -3971,4 +3971,265 @@ mod tests {
             "new network skills should appear after reload"
         );
     }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // skill_nudge_followup unit tests
+    // ──────────────────────────────────────────────────────────────────────────
+
+    struct FixedProvider {
+        reply: &'static str,
+    }
+    #[async_trait::async_trait]
+    impl LlmProvider for FixedProvider {
+        fn provider_id(&self) -> &str {
+            "fixed"
+        }
+        async fn complete(&self, request: &LlmRequest) -> Result<crate::providers::LlmResponse> {
+            // Verify no tools are sent (would cause infinite loop)
+            assert!(
+                request.tools.is_empty(),
+                "skill_nudge_followup must send tools=[] to prevent tool loop"
+            );
+            Ok(crate::providers::LlmResponse {
+                content: vec![ContentBlock::Text {
+                    text: self.reply.to_string(),
+                }],
+                model: String::new(),
+                usage: None,
+                stop_reason: None,
+            })
+        }
+        async fn health_check(&self) -> Result<bool> {
+            Ok(true)
+        }
+    }
+
+    struct FailingProvider;
+    #[async_trait::async_trait]
+    impl LlmProvider for FailingProvider {
+        fn provider_id(&self) -> &str {
+            "failing"
+        }
+        async fn complete(&self, _request: &LlmRequest) -> Result<crate::providers::LlmResponse> {
+            Err(opencrust_common::Error::Agent("simulated LLM error".into()))
+        }
+        async fn health_check(&self) -> Result<bool> {
+            Ok(true)
+        }
+    }
+
+    fn runtime_with_create_skill_tool(dir: &std::path::Path) -> AgentRuntime {
+        let mut runtime = AgentRuntime::new();
+        runtime.register_tool(Box::new(
+            crate::tools::create_skill_tool::CreateSkillTool::new(dir),
+        ));
+        runtime
+    }
+
+    #[tokio::test]
+    async fn nudge_returns_none_below_threshold() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let runtime = runtime_with_create_skill_tool(dir.path());
+        let provider = FixedProvider {
+            reply: "Would you like to save this?",
+        };
+        // tool_call_count = 2, threshold = 3 → should not fire
+        let result = runtime
+            .skill_nudge_followup(
+                SKILL_REFLECTION_THRESHOLD - 1,
+                &provider,
+                &[],
+                &None,
+                "",
+                256,
+                "sess",
+            )
+            .await;
+        assert!(result.is_none(), "should not fire below threshold");
+    }
+
+    #[tokio::test]
+    async fn nudge_returns_none_without_create_skill_tool() {
+        let runtime = AgentRuntime::new(); // no create_skill registered
+        let provider = FixedProvider {
+            reply: "Would you like to save this?",
+        };
+        let result = runtime
+            .skill_nudge_followup(
+                SKILL_REFLECTION_THRESHOLD + 5,
+                &provider,
+                &[],
+                &None,
+                "",
+                256,
+                "sess",
+            )
+            .await;
+        assert!(
+            result.is_none(),
+            "should not fire without create_skill tool registered"
+        );
+    }
+
+    #[tokio::test]
+    async fn nudge_fires_at_threshold_and_returns_llm_text() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let runtime = runtime_with_create_skill_tool(dir.path());
+        let provider = FixedProvider {
+            reply: "Would you like to save this workflow as a reusable skill?",
+        };
+        let result = runtime
+            .skill_nudge_followup(
+                SKILL_REFLECTION_THRESHOLD,
+                &provider,
+                &[make_msg(ChatRole::User, "help me with git rebase")],
+                &None,
+                "",
+                256,
+                "sess",
+            )
+            .await;
+        assert!(result.is_some(), "should fire at threshold");
+        assert!(result.unwrap().contains("Would you like to save"));
+    }
+
+    #[tokio::test]
+    async fn nudge_caps_max_tokens_at_256() {
+        struct CheckMaxTokensProvider;
+        #[async_trait::async_trait]
+        impl LlmProvider for CheckMaxTokensProvider {
+            fn provider_id(&self) -> &str {
+                "check"
+            }
+            async fn complete(
+                &self,
+                request: &LlmRequest,
+            ) -> Result<crate::providers::LlmResponse> {
+                assert!(
+                    request.max_tokens.unwrap_or(0) <= 256,
+                    "max_tokens must be capped at 256, got {:?}",
+                    request.max_tokens
+                );
+                Ok(crate::providers::LlmResponse {
+                    content: vec![ContentBlock::Text {
+                        text: "Save?".to_string(),
+                    }],
+                    model: String::new(),
+                    usage: None,
+                    stop_reason: None,
+                })
+            }
+            async fn health_check(&self) -> Result<bool> {
+                Ok(true)
+            }
+        }
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let runtime = runtime_with_create_skill_tool(dir.path());
+        let provider = CheckMaxTokensProvider;
+        // Pass a very large max_tokens; method must clamp to 256
+        let result = runtime
+            .skill_nudge_followup(
+                SKILL_REFLECTION_THRESHOLD,
+                &provider,
+                &[],
+                &None,
+                "",
+                8192,
+                "sess",
+            )
+            .await;
+        assert!(result.is_some());
+    }
+
+    #[tokio::test]
+    async fn nudge_returns_none_on_provider_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let runtime = runtime_with_create_skill_tool(dir.path());
+        let provider = FailingProvider;
+        let result = runtime
+            .skill_nudge_followup(
+                SKILL_REFLECTION_THRESHOLD,
+                &provider,
+                &[],
+                &None,
+                "",
+                256,
+                "sess",
+            )
+            .await;
+        // Error should be swallowed — returns None, not Err
+        assert!(
+            result.is_none(),
+            "provider error should yield None, not panic"
+        );
+    }
+
+    #[tokio::test]
+    async fn nudge_injects_internal_message_at_end_of_history() {
+        struct CaptureProvider {
+            captured: std::sync::Arc<std::sync::Mutex<Option<LlmRequest>>>,
+        }
+        #[async_trait::async_trait]
+        impl LlmProvider for CaptureProvider {
+            fn provider_id(&self) -> &str {
+                "capture"
+            }
+            async fn complete(
+                &self,
+                request: &LlmRequest,
+            ) -> Result<crate::providers::LlmResponse> {
+                *self.captured.lock().unwrap() = Some(request.clone());
+                Ok(crate::providers::LlmResponse {
+                    content: vec![ContentBlock::Text {
+                        text: "Save?".to_string(),
+                    }],
+                    model: String::new(),
+                    usage: None,
+                    stop_reason: None,
+                })
+            }
+            async fn health_check(&self) -> Result<bool> {
+                Ok(true)
+            }
+        }
+
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let dir = tempfile::TempDir::new().unwrap();
+        let runtime = runtime_with_create_skill_tool(dir.path());
+        let provider = CaptureProvider {
+            captured: captured.clone(),
+        };
+
+        let history = vec![make_msg(ChatRole::User, "help me rebase")];
+        runtime
+            .skill_nudge_followup(
+                SKILL_REFLECTION_THRESHOLD,
+                &provider,
+                &history,
+                &None,
+                "",
+                256,
+                "sess",
+            )
+            .await;
+
+        let req = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("provider must be called");
+        // History has 1 message; injected internal message must be appended → total = 2
+        assert_eq!(req.messages.len(), 2);
+        let last = &req.messages[1];
+        let text = match &last.content {
+            MessagePart::Text(t) => t.clone(),
+            _ => panic!("last message must be Text"),
+        };
+        assert!(
+            text.contains("[internal]"),
+            "injected message must contain [internal] marker"
+        );
+        assert!(matches!(last.role, ChatRole::User));
+    }
 }
