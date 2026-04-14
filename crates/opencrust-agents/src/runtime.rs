@@ -2650,7 +2650,9 @@ fn self_learning_guidance() -> String {
      1. Would I need to figure this out again from scratch? (if no → skip)\n\
      2. Is it specific enough to be actionable? (vague tips → skip)\n\
      3. Does a similar skill already exist? (if yes → skip)\n\n\
-     If yes to (1) and (2) and no to (3): call `create_skill` with a specific `rationale`."
+     If yes to (1) and (2) and no to (3): **ask the user for confirmation before saving** \
+     (e.g. 'I found a reusable workflow — would you like me to save it as a skill?'). \
+     Only call `create_skill` after the user confirms."
         .to_string()
 }
 
