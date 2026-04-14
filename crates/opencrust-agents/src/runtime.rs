@@ -943,6 +943,7 @@ impl AgentRuntime {
         model_override: Option<&str>,
         system_prompt_override: Option<&str>,
         max_tokens_override: Option<u32>,
+        max_context_tokens_override: Option<usize>,
     ) -> Result<String> {
         let provider: Arc<dyn LlmProvider> = if let Some(pid) = provider_id {
             self.get_provider(pid)
@@ -1006,7 +1007,9 @@ impl AgentRuntime {
             content: MessagePart::Text(user_text.to_string()),
         });
 
-        let max_ctx = self.max_context_tokens.unwrap_or(100_000);
+        let max_ctx = max_context_tokens_override
+            .or(self.max_context_tokens)
+            .unwrap_or(100_000);
         trim_messages_to_budget(&mut messages, &system, &tool_defs, max_ctx);
 
         let mut tool_call_count: usize = 0;
@@ -1125,6 +1128,7 @@ impl AgentRuntime {
         model_override: Option<&str>,
         system_prompt_override: Option<&str>,
         max_tokens_override: Option<u32>,
+        max_context_tokens_override: Option<usize>,
         session_summary: Option<&str>,
     ) -> Result<(String, Option<String>)> {
         let provider: Arc<dyn LlmProvider> = if let Some(pid) = provider_id {
@@ -1192,7 +1196,9 @@ impl AgentRuntime {
             ),
         });
 
-        let max_ctx = self.max_context_tokens.unwrap_or(100_000);
+        let max_ctx = max_context_tokens_override
+            .or(self.max_context_tokens)
+            .unwrap_or(100_000);
         let new_summary = compact_messages(
             &mut messages,
             &system,
