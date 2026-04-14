@@ -65,7 +65,7 @@ impl Tool for CreateSkillTool {
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "Unique skill name used as the filename (e.g. 'disk-cleanup', 'ล้างดิสก์', '清理磁盘'). Letters from any language, digits, hyphens, and underscores are allowed. No spaces or path separators."
+                    "description": "Unique skill name used as the filename (e.g. 'disk-cleanup', 'git-rebase-onto'). Letters, digits, hyphens, and underscores only. No spaces or other characters."
                 },
                 "description": {
                     "type": "string",
