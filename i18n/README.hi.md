@@ -68,6 +68,18 @@ cargo build --release --features plugins
 ```
 </details>
 
+### Web Chat
+
+Gateway चालू होने के बाद, browser में खोलें:
+
+```
+http://127.0.0.1:3888
+```
+
+Built-in Web UI से आप agent से chat कर सकते हैं, LLM provider बदल सकते हैं, MCP server manage कर सकते हैं और connected channels देख सकते हैं — बिना restart किए।
+
+> **Authentication** — अगर `config.yml` में `api_key` सेट है, तो UI connect करने से पहले gateway key मांगेगा।
+
 ### Terminal Chat
 
 Browser खोले बिना सीधे terminal से agent से बात करें।
@@ -124,18 +136,6 @@ Goodbye!
 ```
 
 **Chat commands:** `/help` · `/new` (नया session) · `/agent <id>` · `/clear` · `/exit`
-
-### Web Chat
-
-Gateway चालू होने के बाद, browser में खोलें:
-
-```
-http://127.0.0.1:3888
-```
-
-Built-in Web UI से आप agent से chat कर सकते हैं, LLM provider बदल सकते हैं, MCP server manage कर सकते हैं और connected channels देख सकते हैं — बिना restart किए।
-
-> **Authentication** — अगर `config.yml` में `api_key` सेट है, तो UI connect करने से पहले gateway key मांगेगा।
 
 Linux (x86_64, aarch64), macOS (Intel, Apple Silicon) और Windows (x86_64) के लिए binary [GitHub Releases](https://github.com/opencrust-org/opencrust/releases) पर उपलब्ध हैं।
 
