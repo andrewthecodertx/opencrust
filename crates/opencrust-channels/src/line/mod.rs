@@ -60,6 +60,7 @@ pub struct LineChannel {
     /// Base URL for the LINE data API (file/image/audio downloads).
     /// Defaults to `https://api-data.line.me/v2/bot`.
     data_api_base_url: String,
+    name: String,
     display: String,
     /// LINE user ID of this bot, resolved from `GET /v2/bot/info` on connect.
     /// Used to detect `@mention` in group messages.
@@ -95,12 +96,19 @@ impl LineChannel {
             channel_secret,
             api_base_url: api::LINE_API_BASE.to_string(),
             data_api_base_url: api::LINE_DATA_API_BASE.to_string(),
+            name: "line".to_string(),
             display: String::new(),
             bot_user_id: None,
             status: ChannelStatus::Disconnected,
             on_message,
             group_filter,
         }
+    }
+
+    /// Override the config key name for this channel instance.
+    pub fn with_name(mut self, name: String) -> Self {
+        self.name = name;
+        self
     }
 
     /// Override the LINE messaging API base URL (e.g. to point at a mock server in tests).
@@ -174,12 +182,17 @@ pub struct LineSender {
     client: Client,
     channel_access_token: String,
     api_base_url: String,
+    name: String,
 }
 
 #[async_trait]
 impl ChannelSender for LineSender {
     fn channel_type(&self) -> &str {
         "line"
+    }
+
+    fn channel_name(&self) -> &str {
+        &self.name
     }
 
     async fn send_message(&self, message: &Message) -> Result<()> {
@@ -204,6 +217,7 @@ impl ChannelLifecycle for LineChannel {
             client: self.client.clone(),
             channel_access_token: self.channel_access_token.clone(),
             api_base_url: self.api_base_url.clone(),
+            name: self.name.clone(),
         })
     }
 
@@ -244,6 +258,10 @@ impl ChannelLifecycle for LineChannel {
 impl ChannelSender for LineChannel {
     fn channel_type(&self) -> &str {
         "line"
+    }
+
+    fn channel_name(&self) -> &str {
+        &self.name
     }
 
     async fn send_message(&self, message: &Message) -> Result<()> {

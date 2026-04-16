@@ -179,7 +179,7 @@ impl GatewayServer {
             let sender: Arc<dyn ChannelSender> = Arc::from(channel.create_sender());
             state
                 .channel_senders
-                .insert(sender.channel_type().to_string(), sender);
+                .insert(sender.channel_name().to_string(), sender);
             tokio::spawn(async move {
                 if let Err(e) = channel.connect().await {
                     warn!("discord channel failed to connect: {e}");
@@ -225,7 +225,7 @@ impl GatewayServer {
             let sender: Arc<dyn ChannelSender> = Arc::from(channel.create_sender());
             state
                 .channel_senders
-                .insert(sender.channel_type().to_string(), sender);
+                .insert(sender.channel_name().to_string(), sender);
             tokio::spawn(async move {
                 if let Err(e) = channel.connect().await {
                     warn!("telegram channel failed to connect: {e}");
@@ -242,7 +242,7 @@ impl GatewayServer {
             let sender: Arc<dyn ChannelSender> = Arc::from(channel.create_sender());
             state
                 .channel_senders
-                .insert(sender.channel_type().to_string(), sender);
+                .insert(sender.channel_name().to_string(), sender);
             tokio::spawn(async move {
                 if let Err(e) = channel.connect().await {
                     warn!("slack channel failed to connect: {e}");
@@ -261,7 +261,7 @@ impl GatewayServer {
                 let sender: Arc<dyn ChannelSender> = Arc::from(channel.create_sender());
                 state
                     .channel_senders
-                    .insert(sender.channel_type().to_string(), sender);
+                    .insert(sender.channel_name().to_string(), sender);
                 tokio::spawn(async move {
                     if let Err(e) = channel.connect().await {
                         warn!("imessage channel failed to connect: {e}");
@@ -279,7 +279,7 @@ impl GatewayServer {
             let sender: Arc<dyn ChannelSender> = Arc::from(channel.create_sender());
             state
                 .channel_senders
-                .insert(sender.channel_type().to_string(), sender);
+                .insert(sender.channel_name().to_string(), sender);
             info!(
                 "whatsapp channel ready (webhook mode, phone_number_id={})",
                 channel.phone_number_id()
@@ -294,7 +294,7 @@ impl GatewayServer {
             let sender: Arc<dyn ChannelSender> = Arc::from(channel.create_sender());
             state
                 .channel_senders
-                .insert(sender.channel_type().to_string(), sender);
+                .insert(sender.channel_name().to_string(), sender);
             tokio::spawn(async move {
                 if let Err(e) = channel.connect().await {
                     warn!("whatsapp-web channel failed to connect: {e}");
@@ -318,7 +318,7 @@ impl GatewayServer {
             let sender: Arc<dyn ChannelSender> = Arc::from(channel.create_sender());
             state
                 .channel_senders
-                .insert(sender.channel_type().to_string(), sender);
+                .insert(sender.channel_name().to_string(), sender);
             info!("line channel ready (webhook mode)");
         }
         let line_state: opencrust_channels::line::webhook::LineWebhookState =
@@ -329,7 +329,7 @@ impl GatewayServer {
             let sender: Arc<dyn ChannelSender> = Arc::from(channel.create_sender());
             state
                 .channel_senders
-                .insert(sender.channel_type().to_string(), sender);
+                .insert(sender.channel_name().to_string(), sender);
             info!("wechat channel ready (webhook mode)");
         }
         let wechat_state: opencrust_channels::wechat::webhook::WeChatWebhookState =
@@ -339,10 +339,9 @@ impl GatewayServer {
         let mut mqtt_channels = build_mqtt_channels(&state.config, &state);
         for mut channel in mqtt_channels.drain(..) {
             let sender: Arc<dyn ChannelSender> = Arc::from(channel.create_sender());
-            // Key by channel name to support multiple mqtt instances
             state
                 .channel_senders
-                .insert(format!("mqtt-{}", sender.channel_type()), sender);
+                .insert(sender.channel_name().to_string(), sender);
             tokio::spawn(async move {
                 if let Err(e) = channel.connect().await {
                     warn!("mqtt channel failed to connect: {e}");

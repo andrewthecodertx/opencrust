@@ -1166,7 +1166,8 @@ pub fn build_discord_channels(
                     discord_config,
                     on_message,
                     group_filter,
-                );
+                )
+                .with_name(name.clone());
                 channels.push(Box::new(channel) as Box<dyn opencrust_channels::Channel>);
                 info!("configured discord channel: {name}");
             }
@@ -1865,7 +1866,8 @@ pub fn build_telegram_channels(
             },
         );
 
-        let channel = TelegramChannel::with_group_filter(bot_token, on_message, group_filter);
+        let channel = TelegramChannel::with_group_filter(bot_token, on_message, group_filter)
+            .with_name(name.clone());
         channels.push(Box::new(channel) as Box<dyn opencrust_channels::Channel>);
         info!("configured telegram channel: {name}");
     }
@@ -2447,7 +2449,8 @@ pub fn build_slack_channels(
             on_message,
             group_filter,
             bot_user_id,
-        );
+        )
+        .with_name(name.clone());
         channels.push(Box::new(channel) as Box<dyn opencrust_channels::Channel>);
         info!("configured slack channel: {name}");
     }
@@ -2801,13 +2804,9 @@ pub fn build_whatsapp_channels(
             },
         );
 
-        let channel = Arc::new(WhatsAppChannel::new(
-            access_token,
-            phone_number_id,
-            verify_token,
-            on_message,
-        ));
-        channels.push(channel);
+        let channel = WhatsAppChannel::new(access_token, phone_number_id, verify_token, on_message)
+            .with_name(name.clone());
+        channels.push(Arc::new(channel));
         info!("configured whatsapp channel: {name}");
     }
 
@@ -3019,7 +3018,8 @@ pub fn build_whatsapp_web_channels(
             },
         );
 
-        let channel = WhatsAppWebChannel::with_group_filter(on_message, group_filter);
+        let channel =
+            WhatsAppWebChannel::with_group_filter(on_message, group_filter).with_name(name.clone());
         channels.push(channel);
         info!("configured whatsapp-web channel: {name}");
     }
@@ -3189,7 +3189,8 @@ pub fn build_imessage_channels(
         );
 
         let channel =
-            IMessageChannel::with_group_filter(poll_interval_secs, on_message, group_filter);
+            IMessageChannel::with_group_filter(poll_interval_secs, on_message, group_filter)
+                .with_name(name.clone());
         channels.push(Box::new(channel) as Box<dyn opencrust_channels::Channel>);
         info!("configured imessage channel: {name}");
     }
@@ -3490,7 +3491,8 @@ pub fn build_line_channels(
             channel_secret,
             on_message,
             group_filter,
-        );
+        )
+        .with_name(name.clone());
         channels.push(channel);
         info!("configured line channel: {name}");
     }
@@ -3786,14 +3788,10 @@ pub fn build_wechat_channels(
             },
         );
 
-        let channel = Arc::new(WeChatChannel::with_group_filter(
-            appid,
-            secret,
-            token,
-            on_message,
-            group_filter,
-        ));
-        channels.push(channel);
+        let channel =
+            WeChatChannel::with_group_filter(appid, secret, token, on_message, group_filter)
+                .with_name(name.clone());
+        channels.push(Arc::new(channel));
         info!("configured wechat channel: {name}");
     }
 
