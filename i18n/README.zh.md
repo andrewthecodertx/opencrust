@@ -68,6 +68,18 @@ cargo build --release --features plugins
 ```
 </details>
 
+### 网页聊天
+
+Gateway 启动后，在浏览器中打开：
+
+```
+http://127.0.0.1:3888
+```
+
+内置 Web UI 让你与 agent 对话、实时切换 LLM provider、管理 MCP server 并监控已连接的 channel — 无需重启。
+
+> **身份验证** — 若 `config.yml` 中设置了 `api_key`，UI 将在连接前提示输入 gateway key。
+
 ### 终端聊天
 
 直接在终端与 agent 对话，无需打开浏览器。
@@ -124,18 +136,6 @@ Goodbye!
 ```
 
 **聊天命令：** `/help` · `/new`（新建会话）· `/agent <id>` · `/clear` · `/exit`
-
-### 网页聊天
-
-Gateway 启动后，在浏览器中打开：
-
-```
-http://127.0.0.1:3888
-```
-
-内置 Web UI 让你与 agent 对话、实时切换 LLM provider、管理 MCP server 并监控已连接的 channel — 无需重启。
-
-> **身份验证** — 若 `config.yml` 中设置了 `api_key`，UI 将在连接前提示输入 gateway key。
 
 适用于 Linux (x86_64, aarch64)、macOS (Intel, Apple Silicon) 和 Windows (x86_64) 的预编译二进制文件。可在 [GitHub Releases](https://github.com/opencrust-org/opencrust/releases) 下载。
 
