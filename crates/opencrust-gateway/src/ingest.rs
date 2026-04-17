@@ -128,6 +128,93 @@ pub async fn ingest_from_bytes(
     .await
 }
 
+/// Core ingestion: chunk text, embed, store.
+async fn ingest_text(
+    name: &str,
+    text: &str,
+    source_path: Option<String>,
+    mime: &str,
+    doc_store: &DocumentStore,
+    embedding_provider: Option<&dyn EmbeddingProvider>,
+    replace: bool,
+) -> Result<IngestResult> {
+    if text.trim().is_empty() {
+        return Err(Error::Media(format!("no text content found in {name}")));
+    }
+
+    // Handle duplicates
+    let replaced = if doc_store.get_document_by_name(name)?.is_some() {
+        if replace {
+            doc_store.remove_document(name)?;
+            true
+        } else {
+            return Err(Error::Media(format!("document '{name}' already ingested")));
+        }
+    } else {
+        false
+    };
+
+    let chunks = opencrust_media::chunk_text(text, &opencrust_media::ChunkOptions::default());
+
+    info!("ingesting '{name}' ({} chunks)", chunks.len());
+
+    let doc_id = doc_store.add_document(name, source_path.as_deref(), mime)?;
+
+    let has_embeddings = embedding_provider.is_some();
+
+    for chunk in &chunks {
+        let embedding = if let Some(provider) = embedding_provider {
+            match provider
+                .embed_documents(std::slice::from_ref(&chunk.text))
+                .await
+            {
+                Ok(mut vecs) if !vecs.is_empty() => Some(vecs.remove(0)),
+                Ok(_) => None,
+                Err(e) => {
+                    if chunk.index == 0 {
+                        warn!("embedding failed for '{name}': {e}");
+                    }
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let model = embedding_provider.map(|p| p.model().to_string());
+        let dims = embedding.as_ref().map(|e| e.len());
+
+        doc_store.add_chunk(
+            &doc_id,
+            chunk.index,
+            &chunk.text,
+            embedding.as_deref(),
+            model.as_deref(),
+            dims,
+            Some(chunk.token_count),
+        )?;
+    }
+
+    doc_store.update_chunk_count(&doc_id, chunks.len())?;
+
+    info!(
+        "ingested '{name}': {} chunks{}",
+        chunks.len(),
+        if has_embeddings {
+            " with embeddings"
+        } else {
+            ""
+        }
+    );
+
+    Ok(IngestResult {
+        name: name.to_string(),
+        chunk_count: chunks.len(),
+        has_embeddings,
+        replaced,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,91 +353,4 @@ mod tests {
             other => panic!("expected Text response, got {other:?}"),
         }
     }
-}
-
-/// Core ingestion: chunk text, embed, store.
-async fn ingest_text(
-    name: &str,
-    text: &str,
-    source_path: Option<String>,
-    mime: &str,
-    doc_store: &DocumentStore,
-    embedding_provider: Option<&dyn EmbeddingProvider>,
-    replace: bool,
-) -> Result<IngestResult> {
-    if text.trim().is_empty() {
-        return Err(Error::Media(format!("no text content found in {name}")));
-    }
-
-    // Handle duplicates
-    let replaced = if doc_store.get_document_by_name(name)?.is_some() {
-        if replace {
-            doc_store.remove_document(name)?;
-            true
-        } else {
-            return Err(Error::Media(format!("document '{name}' already ingested")));
-        }
-    } else {
-        false
-    };
-
-    let chunks = opencrust_media::chunk_text(text, &opencrust_media::ChunkOptions::default());
-
-    info!("ingesting '{name}' ({} chunks)", chunks.len());
-
-    let doc_id = doc_store.add_document(name, source_path.as_deref(), mime)?;
-
-    let has_embeddings = embedding_provider.is_some();
-
-    for chunk in &chunks {
-        let embedding = if let Some(provider) = embedding_provider {
-            match provider
-                .embed_documents(std::slice::from_ref(&chunk.text))
-                .await
-            {
-                Ok(mut vecs) if !vecs.is_empty() => Some(vecs.remove(0)),
-                Ok(_) => None,
-                Err(e) => {
-                    if chunk.index == 0 {
-                        warn!("embedding failed for '{name}': {e}");
-                    }
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        let model = embedding_provider.map(|p| p.model().to_string());
-        let dims = embedding.as_ref().map(|e| e.len());
-
-        doc_store.add_chunk(
-            &doc_id,
-            chunk.index,
-            &chunk.text,
-            embedding.as_deref(),
-            model.as_deref(),
-            dims,
-            Some(chunk.token_count),
-        )?;
-    }
-
-    doc_store.update_chunk_count(&doc_id, chunks.len())?;
-
-    info!(
-        "ingested '{name}': {} chunks{}",
-        chunks.len(),
-        if has_embeddings {
-            " with embeddings"
-        } else {
-            ""
-        }
-    );
-
-    Ok(IngestResult {
-        name: name.to_string(),
-        chunk_count: chunks.len(),
-        has_embeddings,
-        replaced,
-    })
 }
