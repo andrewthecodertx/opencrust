@@ -209,7 +209,7 @@ impl AppState {
 
     /// Issue a short-lived webchat token tied to a single page-load.
     ///
-    /// The token is stored server-side and expires after [`WEBCHAT_TOKEN_TTL`].
+    /// The token is stored server-side and expires after 24 hours.
     /// It is injected into the webchat HTML **instead of** the real gateway API
     /// key so the real key is never visible in the page source.
     pub fn issue_webchat_token(&self) -> String {
