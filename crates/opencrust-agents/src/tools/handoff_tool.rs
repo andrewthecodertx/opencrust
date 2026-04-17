@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use opencrust_common::Result;
-use opencrust_config::{AppConfig, NamedAgentConfig};
+use opencrust_config::AppConfig;
 use std::sync::{Arc, OnceLock, RwLock, Weak};
 
 use super::{Tool, ToolContext, ToolOutput};
@@ -187,6 +187,7 @@ mod tests {
     use super::*;
     use crate::AgentRuntime;
     use crate::providers::{ContentBlock, LlmProvider, LlmRequest, LlmResponse};
+    use opencrust_config::NamedAgentConfig;
     use std::collections::HashMap;
 
     // A provider that always returns a fixed text reply.
