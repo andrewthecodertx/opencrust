@@ -281,7 +281,9 @@ impl ChannelLifecycle for LineChannel {
                             Err(e) => tracing::warn!("line: bot info retry failed: {e}"),
                         }
                     }
-                    tracing::warn!("line: could not resolve bot_user_id after all retries — @mention detection disabled");
+                    tracing::warn!(
+                        "line: could not resolve bot_user_id after all retries — @mention detection disabled"
+                    );
                 });
             }
         }
