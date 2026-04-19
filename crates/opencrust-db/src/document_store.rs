@@ -762,6 +762,78 @@ impl DocumentStore {
             ))),
         }
     }
+
+    /// Search documents whose name contains `pattern` (case-insensitive, partial match).
+    /// Returns matching documents ordered by `created_at DESC`.
+    pub fn search_documents_by_name(&self, pattern: &str) -> Result<Vec<DocumentInfo>> {
+        let conn = self.connection()?;
+        let like_pattern = format!(
+            "%{}%",
+            pattern
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, source_path, mime_type, chunk_count, created_at
+                 FROM documents
+                 WHERE LOWER(name) LIKE LOWER(?) ESCAPE '\\'
+                 ORDER BY created_at DESC",
+            )
+            .map_err(|e| Error::Database(format!("failed to prepare name search: {e}")))?;
+
+        let rows = stmt
+            .query_map(params![like_pattern], |row| {
+                Ok(DocumentInfo {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    source_path: row.get(2)?,
+                    mime_type: row.get(3)?,
+                    chunk_count: row.get::<_, i64>(4).map(|c| c as usize)?,
+                    created_at: row.get(5)?,
+                })
+            })
+            .map_err(|e| Error::Database(format!("failed to execute name search: {e}")))?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Database(format!("failed to collect name search results: {e}")))
+    }
+
+    /// Return all chunks for a given document ID, ordered by `chunk_index`.
+    /// Score is set to `1.0` (direct lookup, not a ranked search).
+    pub fn get_chunks_by_document_id(&self, document_id: &str) -> Result<Vec<DocumentChunk>> {
+        let conn = self.connection()?;
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT c.id, c.document_id, d.name, c.chunk_index, c.text
+                 FROM document_chunks c
+                 JOIN documents d ON d.id = c.document_id
+                 WHERE c.document_id = ?
+                 ORDER BY c.chunk_index ASC",
+            )
+            .map_err(|e| {
+                Error::Database(format!("failed to prepare chunk fetch by doc id: {e}"))
+            })?;
+
+        let rows = stmt
+            .query_map(params![document_id], |row| {
+                Ok(DocumentChunk {
+                    id: row.get(0)?,
+                    document_id: row.get(1)?,
+                    document_name: row.get(2)?,
+                    chunk_index: row.get::<_, i64>(3)? as usize,
+                    text: row.get(4)?,
+                    score: 1.0,
+                })
+            })
+            .map_err(|e| Error::Database(format!("failed to execute chunk fetch: {e}")))?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Database(format!("failed to collect chunks by doc id: {e}")))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1038,5 +1110,67 @@ mod tests {
             .query_row("SELECT count(*) FROM vec_doc_id_map", [], |row| row.get(0))
             .expect("count");
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn get_chunks_by_document_id_returns_all_chunks_ordered() {
+        let store = DocumentStore::in_memory().expect("store");
+        let doc_id = store
+            .add_document("CLAUDE.md", None, "text/markdown")
+            .expect("add_document");
+        store
+            .add_chunk(&doc_id, 0, "first chunk", None, None, None, None)
+            .expect("chunk 0");
+        store
+            .add_chunk(&doc_id, 1, "second chunk", None, None, None, None)
+            .expect("chunk 1");
+        store
+            .add_chunk(&doc_id, 2, "third chunk", None, None, None, None)
+            .expect("chunk 2");
+
+        let chunks = store
+            .get_chunks_by_document_id(&doc_id)
+            .expect("get chunks");
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0].chunk_index, 0);
+        assert_eq!(chunks[1].chunk_index, 1);
+        assert_eq!(chunks[2].chunk_index, 2);
+        assert_eq!(chunks[0].document_name, "CLAUDE.md");
+        assert!((chunks[0].score - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn get_chunks_by_document_id_returns_empty_for_unknown_id() {
+        let store = DocumentStore::in_memory().expect("store");
+        let chunks = store
+            .get_chunks_by_document_id("no-such-id")
+            .expect("get chunks");
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn search_documents_by_name_partial_and_case_insensitive() {
+        let store = DocumentStore::in_memory().expect("store");
+        store
+            .add_document("CLAUDE.md", None, "text/markdown")
+            .expect("doc 1");
+        store
+            .add_document("readme.md", None, "text/markdown")
+            .expect("doc 2");
+        store
+            .add_document("report.pdf", None, "application/pdf")
+            .expect("doc 3");
+
+        let md_docs = store.search_documents_by_name(".md").expect("search");
+        assert_eq!(md_docs.len(), 2);
+
+        let claude_docs = store.search_documents_by_name("claude").expect("search");
+        assert_eq!(claude_docs.len(), 1);
+        assert_eq!(claude_docs[0].name, "CLAUDE.md");
+
+        let none = store
+            .search_documents_by_name("nonexistent")
+            .expect("search");
+        assert!(none.is_empty());
     }
 }
