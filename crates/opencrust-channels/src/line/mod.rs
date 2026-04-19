@@ -77,7 +77,7 @@ pub struct LineChannel {
     name: String,
     display: String,
     /// LINE user ID of this bot, resolved from `GET /v2/bot/info` on connect.
-    /// Arc<OnceLock> lets a background retry task set it without exclusive ownership.
+    /// `Arc<OnceLock>` lets a background retry task set it without exclusive ownership.
     bot_user_id: Arc<OnceLock<String>>,
     status: ChannelStatus,
     on_message: LineOnMessageFn,
