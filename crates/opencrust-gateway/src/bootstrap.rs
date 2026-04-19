@@ -5,8 +5,9 @@ use std::sync::{Arc, Mutex};
 use opencrust_agents::tools::Tool;
 use opencrust_agents::{
     AgentRuntime, AnthropicProvider, BashTool, ChatMessage, CohereEmbeddingProvider,
-    CreateSkillTool, DocSearchTool, FileReadTool, FileWriteTool, GoogleSearchTool, McpManager,
-    OllamaEmbeddingProvider, OllamaProvider, OpenAiProvider, WebFetchTool, WebSearchTool,
+    CreateSkillTool, DocSearchTool, FileReadTool, FileWriteTool, GoogleSearchTool,
+    ListDocumentsTool, McpManager, OllamaEmbeddingProvider, OllamaProvider, OpenAiProvider,
+    WebFetchTool, WebSearchTool,
 };
 use opencrust_channels::{
     ChannelResponse, MediaAttachment, MqttChannel, MqttOnMessageFn, SlackChannel, SlackGroupFilter,
@@ -568,6 +569,8 @@ pub async fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
             )));
             runtime.set_doc_db_path(memory_db_path.clone());
             info!("doc_search tool registered ({mode} search)");
+            runtime.register_tool(Box::new(ListDocumentsTool::new(memory_db_path.clone())));
+            info!("list_documents tool registered");
         }
     }
 
