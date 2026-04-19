@@ -168,6 +168,7 @@ pub async fn line_webhook(
         if is_group
             && !text.is_empty()
             && !is_bot_message
+            && !is_mentioned
             && let Some(observe_fn) = channel.group_observe_fn().cloned()
         {
             let gid = context_id.clone();
