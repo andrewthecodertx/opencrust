@@ -134,6 +134,41 @@ pub async fn get_bot_info(
     })
 }
 
+/// Fetch a group member's display name.
+///
+/// Uses `GET {base_url}/group/{group_id}/member/{user_id}`.
+/// Works even if the user has not added the bot as a friend.
+/// Falls back gracefully — callers should use `user_id` on error.
+pub async fn get_group_member_display_name(
+    client: &Client,
+    channel_access_token: &str,
+    group_id: &str,
+    user_id: &str,
+    base_url: &str,
+) -> Result<String, String> {
+    let resp = client
+        .get(format!("{base_url}/group/{group_id}/member/{user_id}"))
+        .bearer_auth(channel_access_token)
+        .send()
+        .await
+        .map_err(|e| format!("line get_group_member_display_name request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        return Err(format!("line get_group_member_display_name error {status}"));
+    }
+
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("line get_group_member_display_name parse failed: {e}"))?;
+
+    json.get("displayName")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "line get_group_member_display_name: displayName missing".to_string())
+}
+
 /// Send a push message to a user ID (paid tier, works at any time).
 pub async fn push(
     client: &Client,

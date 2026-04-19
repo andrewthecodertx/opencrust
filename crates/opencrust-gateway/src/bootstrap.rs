@@ -3290,6 +3290,11 @@ pub fn build_line_channels(
                         let rag_provider = Arc::clone(&provider);
                         let rag_allowlist = Arc::clone(&allowlist);
                         let inner_on_message = Arc::clone(&on_message);
+                        // Lazy cache: user_id → display_name, populated on first query per user.
+                        let name_cache: Arc<Mutex<HashMap<String, String>>> =
+                            Arc::new(Mutex::new(HashMap::new()));
+                        let rag_client = reqwest::Client::new();
+                        let rag_token = channel_access_token.clone();
                         let rag_on_message: LineOnMessageFn = Arc::new(
                             move |user_id: String,
                                   context_id: String,
@@ -3302,6 +3307,9 @@ pub fn build_line_channels(
                                 let allowlist = Arc::clone(&rag_allowlist);
                                 let inner = Arc::clone(&inner_on_message);
                                 let top_k = rag_top_k;
+                                let name_cache = Arc::clone(&name_cache);
+                                let rag_client = rag_client.clone();
+                                let rag_token = rag_token.clone();
                                 Box::pin(async move {
                                     // RAG group commands (mention required, handled before agent).
                                     // Strip leading @mention token so "@bot !cmd" matches "!cmd".
@@ -3367,17 +3375,50 @@ pub fn build_line_channels(
                                                     top_k,
                                                 ) {
                                                     Ok(hits) if !hits.is_empty() => {
-                                                        let context_block = hits
-                                                            .iter()
-                                                            .map(|(uid, msg)| {
-                                                                format!("{uid}: {msg}")
-                                                            })
-                                                            .collect::<Vec<_>>()
-                                                            .join("\n");
+                                                        let mut lines =
+                                                            Vec::with_capacity(hits.len());
+                                                        for (uid, msg) in &hits {
+                                                            let display = {
+                                                                let cached = name_cache
+                                                                    .lock()
+                                                                    .unwrap()
+                                                                    .get(uid)
+                                                                    .cloned();
+                                                                if let Some(name) = cached {
+                                                                    name
+                                                                } else {
+                                                                    match opencrust_channels::line::api::get_group_member_display_name(
+                                                                        &rag_client,
+                                                                        &rag_token,
+                                                                        &context_id,
+                                                                        uid,
+                                                                        opencrust_channels::line::api::LINE_API_BASE,
+                                                                    )
+                                                                    .await
+                                                                    {
+                                                                        Ok(name) => {
+                                                                            name_cache
+                                                                                .lock()
+                                                                                .unwrap()
+                                                                                .insert(
+                                                                                    uid.clone(),
+                                                                                    name.clone(),
+                                                                                );
+                                                                            name
+                                                                        }
+                                                                        Err(_) => uid.clone(),
+                                                                    }
+                                                                }
+                                                            };
+                                                            lines.push(format!(
+                                                                "{display}: {msg}"
+                                                            ));
+                                                        }
+                                                        let context_block = lines.join("\n");
                                                         format!(
                                                             "[Recent group context — these are recent messages from this group chat. \
 Use them to answer the user's question if relevant. \
-Each line is formatted as <user_id>: <message>. \
+Each line is formatted as <display_name>: <message>. \
 If the answer is present here, answer directly without asking for more information.]\n\
 {context_block}\n---\n{text}"
                                                         )
