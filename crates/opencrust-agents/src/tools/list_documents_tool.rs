@@ -79,7 +79,10 @@ impl Tool for ListDocumentsTool {
             return Ok(ToolOutput::success("No documents have been ingested yet."));
         }
 
-        let mut output = format!("{} document(s) in the store (newest first):\n\n", docs.len());
+        let mut output = format!(
+            "{} document(s) in the store (newest first):\n\n",
+            docs.len()
+        );
         for (i, doc) in docs.iter().enumerate() {
             output.push_str(&format!(
                 "{}. {}\n   Type: {} | Chunks: {} | Ingested: {}\n\n",

@@ -769,7 +769,10 @@ impl DocumentStore {
         let conn = self.connection()?;
         let like_pattern = format!(
             "%{}%",
-            pattern.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+            pattern
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
         );
 
         let mut stmt = conn
@@ -811,7 +814,9 @@ impl DocumentStore {
                  WHERE c.document_id = ?
                  ORDER BY c.chunk_index ASC",
             )
-            .map_err(|e| Error::Database(format!("failed to prepare chunk fetch by doc id: {e}")))?;
+            .map_err(|e| {
+                Error::Database(format!("failed to prepare chunk fetch by doc id: {e}"))
+            })?;
 
         let rows = stmt
             .query_map(params![document_id], |row| {
@@ -1123,7 +1128,9 @@ mod tests {
             .add_chunk(&doc_id, 2, "third chunk", None, None, None, None)
             .expect("chunk 2");
 
-        let chunks = store.get_chunks_by_document_id(&doc_id).expect("get chunks");
+        let chunks = store
+            .get_chunks_by_document_id(&doc_id)
+            .expect("get chunks");
         assert_eq!(chunks.len(), 3);
         assert_eq!(chunks[0].chunk_index, 0);
         assert_eq!(chunks[1].chunk_index, 1);
@@ -1161,7 +1168,9 @@ mod tests {
         assert_eq!(claude_docs.len(), 1);
         assert_eq!(claude_docs[0].name, "CLAUDE.md");
 
-        let none = store.search_documents_by_name("nonexistent").expect("search");
+        let none = store
+            .search_documents_by_name("nonexistent")
+            .expect("search");
         assert!(none.is_empty());
     }
 }

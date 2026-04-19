@@ -247,7 +247,15 @@ mod tests {
                 .add_document("CLAUDE.md", Some("/tmp/CLAUDE.md"), "text/markdown")
                 .unwrap();
             store
-                .add_chunk(&doc_id, 0, "This is the CLAUDE.md content", None, None, None, None)
+                .add_chunk(
+                    &doc_id,
+                    0,
+                    "This is the CLAUDE.md content",
+                    None,
+                    None,
+                    None,
+                    None,
+                )
                 .unwrap();
             store.update_chunk_count(&doc_id, 1).unwrap();
         }
