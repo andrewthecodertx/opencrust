@@ -2960,7 +2960,6 @@ pub fn build_line_channels(
             .clone()
             .unwrap_or_else(|| opencrust_config::ConfigLoader::default_config_dir().join("data"));
 
-
         let on_message: LineOnMessageFn = Arc::new(
             move |user_id: String,
                   context_id: String,
