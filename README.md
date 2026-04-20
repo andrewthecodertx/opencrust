@@ -250,7 +250,7 @@ OpenCrust is built for the security requirements of always-on AI agents that acc
 - Auto-discovery from `~/.opencrust/skills/` - injected into the system prompt
 - Hot-reload — skills are active immediately after `create_skill` or `skill install`, no restart needed
 - CLI: `opencrust skill list`, `opencrust skill install <url|path>`, `opencrust skill remove <name>`
-- **Self-learning** — agent proactively considers saving reusable workflows after completing 3+ tool calls; nudge appears at end of response
+- **Self-learning & self-improvement** — after 3+ tool calls the agent considers saving a new workflow as a skill; when reusing an existing skill it silently self-assesses and patches it autonomously if a gap is found (confidence gate prevents low-signal patches; version is bumped and CHANGELOG.md updated on every patch)
 - `agent.self_learning: false` in `config.yml` to disable
 - 3-layer quality control: prompt guidance, mechanical limits (max 30 skills, min body length, duplicate guard), and required `rationale` field stored in the skill file for auditability
 - **[agentskills.io](https://agentskills.io) compatible** — install community skills from any public hub with `opencrust skill install <url>`; flat (`skill-name.md`) and folder (`skill-name/SKILL.md`) layouts coexist automatically, no migration needed
