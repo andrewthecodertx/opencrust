@@ -96,12 +96,15 @@ pub fn validate_skill(skill: &SkillDefinition) -> Result<()> {
     if skill.body.is_empty() {
         return Err(Error::Skill("skill body must not be empty".into()));
     }
-    if let Some(compat) = &skill.frontmatter.compatibility {
-        if compat.len() > 500 {
-            return Err(Error::Skill(
-                "compatibility field exceeds 500 characters".into(),
-            ));
-        }
+    if skill
+        .frontmatter
+        .compatibility
+        .as_deref()
+        .is_some_and(|c| c.len() > 500)
+    {
+        return Err(Error::Skill(
+            "compatibility field exceeds 500 characters".into(),
+        ));
     }
     Ok(())
 }
