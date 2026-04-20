@@ -145,23 +145,24 @@ binary สำหรับ Linux (x86_64, aarch64), macOS (Intel, Apple Silicon) 
 
 | | **OpenCrust** | **OpenClaw** (Node.js) | **ZeroClaw** (Rust) | **Hermes** (Python) |
 |---|---|---|---|---|
-| **ขนาด binary** | 16 MB | ~1.2 GB (รวม node_modules) | ~25 MB | N/A |
+| **ขนาด binary** | 16 MB | ~1.2 GB (รวม node_modules) | ~25 MB | source only |
 | **RAM ขณะ idle** | 13 MB | ~388 MB | ~20 MB | — |
 | **Cold start** | 3 ms | 13.9 s | ~50 ms | — |
-| **เก็บ credential** | vault เข้ารหัส AES-256-GCM | plaintext config file | plaintext config file | — |
-| **Auth ค่าเริ่มต้น** | เปิดใช้ (WebSocket pairing) | ปิดใช้ | ปิดใช้ | — |
-| **Scheduling** | Cron, interval, one-shot | ใช่ | ไม่ | — |
-| **Multi-agent routing** | ใช่ (named agents) | ใช่ (agentId) | ไม่ | — |
-| **Session orchestration** | ใช่ | ใช่ | ไม่ | — |
-| **MCP support** | Stdio + HTTP | Stdio + HTTP | Stdio | — |
-| **ช่องทาง** | 9 | 6+ | 4 | 10+ |
-| **LLM provider** | 15 | 10+ | 22+ | — |
-| **Pre-compiled binary** | ใช่ | N/A (Node.js) | Build จาก source | — |
-| **Config hot-reload** | ใช่ | ไม่ | ไม่ | — |
-| **WASM plugin system** | Optional (sandboxed) | ไม่ | ไม่ | — |
-| **Self-update** | ใช่ (`opencrust update`) | npm | Build จาก source | — |
-| **Security scan** | ✅ | — | — | ❌ |
-| **Self-improvement** | ✅ confidence gate + CHANGELOG | — | — | ✅ basic |
+| **เก็บ credential** | vault เข้ารหัส AES-256-GCM | plaintext config file | plaintext config file | `~/.hermes/.env` (chmod 600) |
+| **Auth ค่าเริ่มต้น** | เปิดใช้ (WebSocket pairing) | ปิดใช้ | ปิดใช้ | pairing code (8 หลัก, หมดอายุ 1 ชม.) |
+| **Scheduling** | Cron, interval, one-shot | ใช่ | ไม่ | ใช่ (cron + ภาษาธรรมชาติ) |
+| **Multi-agent routing** | ใช่ (named agents) | ใช่ (agentId) | ไม่ | ใช่ (`delegate_task`, depth 2) |
+| **Session orchestration** | ใช่ | ใช่ | ไม่ | ใช่ |
+| **MCP support** | Stdio + HTTP | Stdio + HTTP | Stdio | Stdio + HTTP + OAuth 2.1 |
+| **ช่องทาง** | 9 | 6+ | 4 | 16 |
+| **LLM provider** | 15 | 10+ | 22+ | 18+ |
+| **Pre-compiled binary** | ใช่ | N/A (Node.js) | Build จาก source | ไม่ (ติดตั้งจาก source) |
+| **Config hot-reload** | ใช่ | ไม่ | ไม่ | ไม่ |
+| **Plugin system** | WASM (sandboxed) | ไม่ | ไม่ | Python plugins |
+| **Self-update** | ใช่ (`opencrust update`) | npm | Build จาก source | ใช่ (`hermes update`) |
+| **Execution backends** | local | local | local | local, Docker, SSH, Modal, Daytona |
+| **Security scan** | ✅ skills prompt-injection | — | — | ✅ OSV + prompt-injection + supply chain |
+| **Self-improvement** | ✅ confidence gate + CHANGELOG | — | — | ✅ RL integration + user modeling |
 
 *วัดผลบน DigitalOcean droplet 1 vCPU, 1 GB RAM [ทดสอบเองได้](../bench/)*
 

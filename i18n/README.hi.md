@@ -145,23 +145,24 @@ Linux (x86_64, aarch64), macOS (Intel, Apple Silicon) और Windows (x86_64) �
 
 | | **OpenCrust** | **OpenClaw** (Node.js) | **ZeroClaw** (Rust) | **Hermes** (Python) |
 |---|---|---|---|---|
-| **Binary आकार** | 16 MB | ~1.2 GB (node_modules सहित) | ~25 MB | N/A |
+| **Binary आकार** | 16 MB | ~1.2 GB (node_modules सहित) | ~25 MB | केवल source install |
 | **Idle RAM** | 13 MB | ~388 MB | ~20 MB | — |
 | **Cold start** | 3 ms | 13.9 s | ~50 ms | — |
-| **Credential स्टोरेज** | AES-256-GCM vault | plaintext config file | plaintext config file | — |
-| **डिफ़ॉल्ट Auth** | चालू (WebSocket pairing) | बंद | बंद | — |
-| **Scheduling** | Cron, interval, one-shot | हाँ | नहीं | — |
-| **Multi-agent routing** | हाँ (named agents) | हाँ (agentId) | नहीं | — |
-| **Session orchestration** | हाँ | हाँ | नहीं | — |
-| **MCP support** | Stdio + HTTP | Stdio + HTTP | Stdio | — |
-| **Channels** | 9 | 6+ | 4 | 10+ |
-| **LLM providers** | 15 | 10+ | 22+ | — |
-| **Pre-compiled binary** | हाँ | N/A (Node.js) | Source से Build | — |
-| **Config hot-reload** | हाँ | नहीं | नहीं | — |
-| **WASM plugin system** | Optional (sandboxed) | नहीं | नहीं | — |
-| **Self-update** | हाँ (`opencrust update`) | npm | Source से Build | — |
-| **Security scan** | ✅ | — | — | ❌ |
-| **Self-improvement** | ✅ confidence gate + CHANGELOG | — | — | ✅ basic |
+| **Credential स्टोरेज** | AES-256-GCM vault | plaintext config file | plaintext config file | `~/.hermes/.env` (chmod 600) |
+| **डिफ़ॉल्ट Auth** | चालू (WebSocket pairing) | बंद | बंद | Pairing code (8-char, 1h expiry) |
+| **Scheduling** | Cron, interval, one-shot | हाँ | नहीं | हाँ (cron + natural language) |
+| **Multi-agent routing** | हाँ (named agents) | हाँ (agentId) | नहीं | हाँ (`delegate_task`, depth 2) |
+| **Session orchestration** | हाँ | हाँ | नहीं | हाँ |
+| **MCP support** | Stdio + HTTP | Stdio + HTTP | Stdio | Stdio + HTTP + OAuth 2.1 |
+| **Channels** | 9 | 6+ | 4 | 16 |
+| **LLM providers** | 15 | 10+ | 22+ | 18+ |
+| **Pre-compiled binary** | हाँ | N/A (Node.js) | Source से Build | नहीं (source install) |
+| **Config hot-reload** | हाँ | नहीं | नहीं | नहीं |
+| **Plugin system** | WASM (sandboxed) | नहीं | नहीं | Python plugins |
+| **Self-update** | हाँ (`opencrust update`) | npm | Source से Build | हाँ (`hermes update`) |
+| **Execution backends** | local | local | local | local, Docker, SSH, Modal, Daytona |
+| **Security scan** | ✅ skills prompt-injection | — | — | ✅ OSV + prompt-injection + supply chain |
+| **Self-improvement** | ✅ confidence gate + CHANGELOG | — | — | ✅ RL integration + user modeling |
 
 *DigitalOcean droplet 1 vCPU, 1 GB RAM पर मापा गया — [खुद टेस्ट करें](../bench/)*
 
