@@ -744,12 +744,10 @@ impl AgentRuntime {
     ///
     /// Passes `tools: vec![]` to prevent the model from entering another tool loop.
     /// Returns `None` if `create_skill` is not registered, the threshold is not met,
-    /// skills were already injected (agent is executing from an existing skill, not
-    /// discovering a new workflow), or the follow-up call fails.
+    /// or the follow-up call fails.
     async fn skill_nudge_followup(
         &self,
         tool_call_count: usize,
-        skills_were_injected: bool,
         ctx: NudgeContext<'_>,
         session_id: &str,
     ) -> Option<String> {
@@ -761,11 +759,6 @@ impl AgentRuntime {
             max_tokens,
         } = ctx;
         if tool_call_count < SKILL_REFLECTION_THRESHOLD {
-            return None;
-        }
-        // If a skill was already retrieved for this query the agent is executing
-        // from an existing skill — suppress the nudge to avoid asking to save it again.
-        if skills_were_injected {
             return None;
         }
         if !self.tools.iter().any(|t| t.name() == "create_skill") {
@@ -808,6 +801,130 @@ impl AgentRuntime {
                 warn!("skill nudge follow-up LLM call failed: {}", e);
                 None
             }
+        }
+    }
+
+    /// Fire a self-improvement nudge when the agent used an existing skill.
+    ///
+    /// Makes a follow-up LLM call with `create_skill` available so the model can
+    /// call `patch` autonomously if the skill had gaps. Returns a brief user-visible
+    /// note when a patch was applied, or `None` when no improvement was needed.
+    async fn skill_refine_nudge_followup(
+        &self,
+        tool_call_count: usize,
+        ctx: NudgeContext<'_>,
+        session_id: &str,
+    ) -> Option<String> {
+        let NudgeContext {
+            provider,
+            messages,
+            system,
+            model,
+            max_tokens,
+        } = ctx;
+        if tool_call_count < SKILL_REFLECTION_THRESHOLD {
+            return None;
+        }
+        let create_skill_def = self
+            .tools
+            .iter()
+            .find(|t| t.name() == "create_skill")
+            .map(|t| ToolDefinition {
+                name: t.name().to_string(),
+                description: t.description().to_string(),
+                input_schema: t.input_schema(),
+            })?;
+        let mut msgs = messages.to_vec();
+        msgs.push(ChatMessage {
+            role: ChatRole::User,
+            content: MessagePart::Text(
+                "[internal] You just completed a task using an existing skill. \
+                 Silently self-assess: were any steps in the skill unclear, outdated, \
+                 or improvable based on what you just did? \
+                 If yes, call create_skill with action='patch' to improve it now — \
+                 no need to ask the user. \
+                 If the skill worked well and needs no changes, reply with an empty string."
+                    .to_string(),
+            ),
+        });
+        let request = LlmRequest {
+            model: model.to_string(),
+            messages: msgs,
+            system: system.clone(),
+            max_tokens: Some(max_tokens.min(512)),
+            temperature: None,
+            tools: vec![create_skill_def],
+        };
+        let response = match provider.complete(&request).await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("skill refine nudge LLM call failed: {}", e);
+                return None;
+            }
+        };
+        if let Some(usage) = &response.usage {
+            self.accumulate_usage(
+                session_id,
+                provider.provider_id(),
+                &response.model,
+                usage.input_tokens,
+                usage.output_tokens,
+            );
+        }
+        // Look for a patch tool call in the response.
+        for block in &response.content {
+            if let ContentBlock::ToolUse { name, input, .. } = block {
+                if name == "create_skill"
+                    && input.get("action").and_then(|v| v.as_str()) == Some("patch")
+                {
+                    let skill_name = input
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    let ctx = ToolContext {
+                        session_id: session_id.to_string(),
+                        user_id: None,
+                        heartbeat_depth: 0,
+                        allowed_tools: None,
+                    };
+                    if let Some(tool) = self.find_tool("create_skill") {
+                        match tool.execute(&ctx, input.clone()).await {
+                            Ok(out) if !out.is_error => {
+                                return Some(format!(
+                                    "_(Skill '{skill_name}' updated based on this session.)_"
+                                ));
+                            }
+                            Ok(out) => {
+                                warn!("skill refine patch failed: {}", out.content);
+                            }
+                            Err(e) => {
+                                warn!("skill refine patch error: {}", e);
+                            }
+                        }
+                    }
+                    return None;
+                }
+            }
+        }
+        None
+    }
+
+    /// Dispatch to `skill_refine_nudge_followup` when skills were injected,
+    /// or `skill_nudge_followup` when discovering a new workflow.
+    async fn skill_completion_followup(
+        &self,
+        tool_call_count: usize,
+        skills_were_injected: bool,
+        ctx: NudgeContext<'_>,
+        session_id: &str,
+    ) -> Option<String> {
+        if skills_were_injected {
+            self.skill_refine_nudge_followup(tool_call_count, ctx, session_id)
+                .await
+        } else {
+            self.skill_nudge_followup(tool_call_count, ctx, session_id)
+                .await
         }
     }
 
@@ -1180,7 +1297,7 @@ impl AgentRuntime {
                     warn!("failed to store turn in memory: {}", e);
                 }
                 if let Some(followup) = self
-                    .skill_nudge_followup(
+                    .skill_completion_followup(
                         tool_call_count,
                         skills.is_some(),
                         NudgeContext {
@@ -1394,7 +1511,7 @@ impl AgentRuntime {
                     warn!("failed to store turn in memory: {}", e);
                 }
                 if let Some(followup) = self
-                    .skill_nudge_followup(
+                    .skill_completion_followup(
                         tool_call_count,
                         skills.is_some(),
                         NudgeContext {
@@ -1567,7 +1684,7 @@ impl AgentRuntime {
                 // Post-completion: let the LLM generate a natural follow-up question
                 // asking the user whether to save the workflow as a skill.
                 if let Some(followup) = self
-                    .skill_nudge_followup(
+                    .skill_completion_followup(
                         tool_call_count,
                         skills.is_some(),
                         NudgeContext {
@@ -1863,7 +1980,7 @@ impl AgentRuntime {
                         }
 
                         if let Some(followup) = self
-                            .skill_nudge_followup(
+                            .skill_completion_followup(
                                 tool_call_count,
                                 skills.is_some(),
                                 NudgeContext {
@@ -1989,7 +2106,7 @@ impl AgentRuntime {
                         }
 
                         if let Some(followup) = self
-                            .skill_nudge_followup(
+                            .skill_completion_followup(
                                 tool_call_count,
                                 skills.is_some(),
                                 NudgeContext {
@@ -2199,7 +2316,7 @@ impl AgentRuntime {
                 }
 
                 if let Some(followup) = self
-                    .skill_nudge_followup(
+                    .skill_completion_followup(
                         tool_call_count,
                         skills.is_some(),
                         NudgeContext {
@@ -2436,7 +2553,7 @@ impl AgentRuntime {
 
                         // Post-completion reflection nudge.
                         if let Some(followup) = self
-                            .skill_nudge_followup(
+                            .skill_completion_followup(
                                 tool_call_count,
                                 skills.is_some(),
                                 NudgeContext {
@@ -2549,7 +2666,7 @@ impl AgentRuntime {
 
                         // Post-completion reflection nudge (fallback path).
                         if let Some(followup) = self
-                            .skill_nudge_followup(
+                            .skill_completion_followup(
                                 tool_call_count,
                                 skills.is_some(),
                                 NudgeContext {
@@ -2987,7 +3104,11 @@ fn self_learning_guidance() -> String {
      3. Does a similar skill already exist? (if yes → skip)\n\n\
      If yes to (1) and (2) and no to (3): **ask the user for confirmation before saving** \
      (e.g. 'I found a reusable workflow — would you like me to save it as a skill?'). \
-     Only call `create_skill` after the user confirms."
+     Only call `create_skill` after the user confirms.\n\n\
+     **Improving existing skills (action='patch'):**\n\
+     If you retrieved an existing skill and noticed gaps — steps that were unclear, \
+     outdated, or missing — you may call `create_skill` with `action='patch'` to \
+     improve it autonomously. No user confirmation is required for patches."
         .to_string()
 }
 
@@ -4342,6 +4463,65 @@ mod tests {
         }
     }
 
+    /// Provider for refine-nudge tests: accepts tool definitions, returns a text reply.
+    struct RefineTextProvider {
+        reply: &'static str,
+    }
+    #[async_trait::async_trait]
+    impl LlmProvider for RefineTextProvider {
+        fn provider_id(&self) -> &str {
+            "refine-text"
+        }
+        async fn complete(&self, _request: &LlmRequest) -> Result<crate::providers::LlmResponse> {
+            Ok(crate::providers::LlmResponse {
+                content: vec![ContentBlock::Text {
+                    text: self.reply.to_string(),
+                }],
+                model: String::new(),
+                usage: None,
+                stop_reason: None,
+            })
+        }
+        async fn health_check(&self) -> Result<bool> {
+            Ok(true)
+        }
+    }
+
+    /// Provider that returns a patch tool_use call for create_skill.
+    struct RefinePatchProvider {
+        skill_name: &'static str,
+        new_body: &'static str,
+    }
+    #[async_trait::async_trait]
+    impl LlmProvider for RefinePatchProvider {
+        fn provider_id(&self) -> &str {
+            "refine-patch"
+        }
+        async fn complete(&self, request: &LlmRequest) -> Result<crate::providers::LlmResponse> {
+            assert!(
+                request.tools.iter().any(|t| t.name == "create_skill"),
+                "refine nudge must send create_skill tool definition"
+            );
+            Ok(crate::providers::LlmResponse {
+                content: vec![ContentBlock::ToolUse {
+                    id: "tu_1".to_string(),
+                    name: "create_skill".to_string(),
+                    input: serde_json::json!({
+                        "action": "patch",
+                        "name": self.skill_name,
+                        "body": self.new_body,
+                    }),
+                }],
+                model: String::new(),
+                usage: None,
+                stop_reason: None,
+            })
+        }
+        async fn health_check(&self) -> Result<bool> {
+            Ok(true)
+        }
+    }
+
     struct FailingProvider;
     #[async_trait::async_trait]
     impl LlmProvider for FailingProvider {
@@ -4373,7 +4553,7 @@ mod tests {
         };
         // tool_call_count = 2, threshold = 3 → should not fire
         let result = runtime
-            .skill_nudge_followup(
+            .skill_completion_followup(
                 SKILL_REFLECTION_THRESHOLD - 1,
                 false,
                 NudgeContext {
@@ -4390,15 +4570,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn nudge_returns_none_when_skills_were_injected() {
-        // If a skill was injected the agent is executing from it — don't ask to save again.
+    async fn nudge_returns_none_when_skills_injected_and_no_patch_needed() {
+        // When a skill was injected but the refine nudge determines no patch is needed
+        // (model replies with text, no tool_use), the followup should return None.
         let dir = tempfile::TempDir::new().unwrap();
         let runtime = runtime_with_create_skill_tool(dir.path());
-        let provider = FixedProvider {
-            reply: "Would you like to save this?",
-        };
+        let provider = RefineTextProvider { reply: "" };
         let result = runtime
-            .skill_nudge_followup(
+            .skill_completion_followup(
                 SKILL_REFLECTION_THRESHOLD,
                 true,
                 NudgeContext {
@@ -4413,7 +4592,7 @@ mod tests {
             .await;
         assert!(
             result.is_none(),
-            "should not fire when skills were already injected"
+            "should return None when model signals no improvement needed"
         );
     }
 
@@ -4424,7 +4603,7 @@ mod tests {
             reply: "Would you like to save this?",
         };
         let result = runtime
-            .skill_nudge_followup(
+            .skill_completion_followup(
                 SKILL_REFLECTION_THRESHOLD + 5,
                 false,
                 NudgeContext {
@@ -4451,7 +4630,7 @@ mod tests {
             reply: "Would you like to save this workflow as a reusable skill?",
         };
         let result = runtime
-            .skill_nudge_followup(
+            .skill_completion_followup(
                 SKILL_REFLECTION_THRESHOLD,
                 false,
                 NudgeContext {
@@ -4504,7 +4683,7 @@ mod tests {
         let provider = CheckMaxTokensProvider;
         // Pass a very large max_tokens; method must clamp to 256
         let result = runtime
-            .skill_nudge_followup(
+            .skill_completion_followup(
                 SKILL_REFLECTION_THRESHOLD,
                 false,
                 NudgeContext {
@@ -4526,7 +4705,7 @@ mod tests {
         let runtime = runtime_with_create_skill_tool(dir.path());
         let provider = FailingProvider;
         let result = runtime
-            .skill_nudge_followup(
+            .skill_completion_followup(
                 SKILL_REFLECTION_THRESHOLD,
                 false,
                 NudgeContext {
@@ -4584,7 +4763,7 @@ mod tests {
 
         let history = vec![make_msg(ChatRole::User, "help me rebase")];
         runtime
-            .skill_nudge_followup(
+            .skill_completion_followup(
                 SKILL_REFLECTION_THRESHOLD,
                 false,
                 NudgeContext {
@@ -4615,5 +4794,126 @@ mod tests {
             "injected message must contain [internal] marker"
         );
         assert!(matches!(last.role, ChatRole::User));
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // skill_refine_nudge_followup unit tests
+    // ──────────────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn refine_nudge_returns_none_below_threshold() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let runtime = runtime_with_create_skill_tool(dir.path());
+        let provider = RefineTextProvider { reply: "" };
+        let result = runtime
+            .skill_refine_nudge_followup(
+                SKILL_REFLECTION_THRESHOLD - 1,
+                NudgeContext {
+                    provider: &provider,
+                    messages: &[],
+                    system: &None,
+                    model: "",
+                    max_tokens: 256,
+                },
+                "sess",
+            )
+            .await;
+        assert!(
+            result.is_none(),
+            "refine nudge must not fire below threshold"
+        );
+    }
+
+    #[tokio::test]
+    async fn refine_nudge_returns_none_without_create_skill_tool() {
+        let runtime = AgentRuntime::new();
+        let provider = RefineTextProvider { reply: "" };
+        let result = runtime
+            .skill_refine_nudge_followup(
+                SKILL_REFLECTION_THRESHOLD,
+                NudgeContext {
+                    provider: &provider,
+                    messages: &[],
+                    system: &None,
+                    model: "",
+                    max_tokens: 256,
+                },
+                "sess",
+            )
+            .await;
+        assert!(
+            result.is_none(),
+            "refine nudge must not fire when create_skill is not registered"
+        );
+    }
+
+    #[tokio::test]
+    async fn refine_nudge_returns_none_when_model_says_no_improvement() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let runtime = runtime_with_create_skill_tool(dir.path());
+        let provider = RefineTextProvider { reply: "" };
+        let result = runtime
+            .skill_refine_nudge_followup(
+                SKILL_REFLECTION_THRESHOLD,
+                NudgeContext {
+                    provider: &provider,
+                    messages: &[],
+                    system: &None,
+                    model: "",
+                    max_tokens: 256,
+                },
+                "sess",
+            )
+            .await;
+        assert!(
+            result.is_none(),
+            "empty model reply means no improvement needed — should return None"
+        );
+    }
+
+    #[tokio::test]
+    async fn refine_nudge_applies_patch_and_returns_note() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Pre-create the skill so patch can find it.
+        let skill_dir = dir.path().join("my-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: my-skill\ndescription: test\n---\nOriginal body with enough chars to pass validation and be valid.",
+        )
+        .unwrap();
+
+        let runtime = runtime_with_create_skill_tool(dir.path());
+        let provider = RefinePatchProvider {
+            skill_name: "my-skill",
+            new_body: "Updated body with improvements and enough characters to pass validation.",
+        };
+        let result = runtime
+            .skill_refine_nudge_followup(
+                SKILL_REFLECTION_THRESHOLD,
+                NudgeContext {
+                    provider: &provider,
+                    messages: &[],
+                    system: &None,
+                    model: "",
+                    max_tokens: 512,
+                },
+                "sess",
+            )
+            .await;
+        assert!(
+            result.is_some(),
+            "should return a note when patch was applied"
+        );
+        assert!(
+            result.unwrap().contains("my-skill"),
+            "note should mention the skill name"
+        );
+        // Verify the skill file was updated.
+        let updated = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+        assert!(
+            updated.contains("Updated body"),
+            "SKILL.md should reflect the patch"
+        );
     }
 }
