@@ -145,23 +145,24 @@ Goodbye!
 
 | | **OpenCrust** | **OpenClaw** (Node.js) | **ZeroClaw** (Rust) | **Hermes** (Python) |
 |---|---|---|---|---|
-| **二进制文件大小** | 16 MB | ~1.2 GB (包含 node_modules) | ~25 MB | N/A |
+| **二进制文件大小** | 16 MB | ~1.2 GB (包含 node_modules) | ~25 MB | 仅源码安装 |
 | **空闲状态内存** | 13 MB | ~388 MB | ~20 MB | — |
 | **冷启动速度** | 3 ms | 13.9 s | ~50 ms | — |
-| **凭据存储方式** | AES-256-GCM 加密库 | 明文配置文件 | 明文配置文件 | — |
-| **默认身份验证** | 已启用 (WebSocket 配对) | 默认禁用 | 默认禁用 | — |
-| **任务调度** | Cron, 间隔, 单次执行 | 是 | 否 | — |
-| **多代理路由** | 是 (命名代理) | 是 (agentId) | 否 | — |
-| **会话编排** | 是 | 是 | 否 | — |
-| **MCP 支持** | Stdio + HTTP | Stdio + HTTP | Stdio | — |
-| **渠道数量** | 9 | 6+ | 4 | 10+ |
-| **LLM 供应商数量** | 15 | 10+ | 22+ | — |
-| **预编译二进制文件** | 是 | 无 (Node.js) | 源码编译 | — |
-| **配置热重载** | 是 | 否 | 否 | — |
-| **WASM 插件系统** | 可选 (沙盒隔离) | 否 | 否 | — |
-| **自动更新** | 是 (`opencrust update`) | npm | 源码编译 | — |
-| **安全扫描** | ✅ | — | — | ❌ |
-| **自我改进** | ✅ confidence gate + CHANGELOG | — | — | ✅ basic |
+| **凭据存储方式** | AES-256-GCM 加密库 | 明文配置文件 | 明文配置文件 | `~/.hermes/.env` (chmod 600) |
+| **默认身份验证** | 已启用 (WebSocket 配对) | 默认禁用 | 默认禁用 | 配对码 (8位, 1小时有效) |
+| **任务调度** | Cron, 间隔, 单次执行 | 是 | 否 | 是 (cron + 自然语言) |
+| **多代理路由** | 是 (命名代理) | 是 (agentId) | 否 | 是 (`delegate_task`, 深度 2) |
+| **会话编排** | 是 | 是 | 否 | 是 |
+| **MCP 支持** | Stdio + HTTP | Stdio + HTTP | Stdio | Stdio + HTTP + OAuth 2.1 |
+| **渠道数量** | 9 | 6+ | 4 | 16 |
+| **LLM 供应商数量** | 15 | 10+ | 22+ | 18+ |
+| **预编译二进制文件** | 是 | 无 (Node.js) | 源码编译 | 否 (源码安装) |
+| **配置热重载** | 是 | 否 | 否 | 否 |
+| **插件系统** | WASM (沙盒隔离) | 否 | 否 | Python 插件 |
+| **自动更新** | 是 (`opencrust update`) | npm | 源码编译 | 是 (`hermes update`) |
+| **执行后端** | 本地 | 本地 | 本地 | 本地、Docker、SSH、Modal、Daytona |
+| **安全扫描** | ✅ skills 提示注入扫描 | — | — | ✅ OSV + 提示注入 + 供应链 |
+| **自我改进** | ✅ confidence gate + CHANGELOG | — | — | ✅ RL 集成 + 用户建模 |
 
 *性能基准测试在 1 vCPU, 1 GB RAM 的 DigitalOcean Droplet 上进行。*
 
