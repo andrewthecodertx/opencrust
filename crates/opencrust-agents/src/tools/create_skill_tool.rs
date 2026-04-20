@@ -33,10 +33,24 @@ impl CreateSkillTool {
             .map(|entries| {
                 entries
                     .filter_map(|e| e.ok())
-                    .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("md"))
+                    .filter(|e| {
+                        let p = e.path();
+                        // Folder layout: skill-name/SKILL.md
+                        if p.is_dir() {
+                            return p.join("SKILL.md").exists();
+                        }
+                        // Flat layout: skill-name.md
+                        p.extension().and_then(|x| x.to_str()) == Some("md")
+                    })
                     .count()
             })
             .unwrap_or(0)
+    }
+
+    /// Returns true when a skill with this name already exists (either layout).
+    fn skill_exists(&self, name: &str) -> bool {
+        self.skills_dir.join(name).join("SKILL.md").exists()
+            || self.skills_dir.join(format!("{name}.md")).exists()
     }
 }
 
@@ -170,8 +184,7 @@ impl Tool for CreateSkillTool {
         }
 
         // Duplicate guard
-        let skill_path = self.skills_dir.join(format!("{name}.md"));
-        if skill_path.exists() && !overwrite {
+        if self.skill_exists(&name) && !overwrite {
             return Ok(ToolOutput::error(format!(
                 "skill '{name}' already exists. \
                  If you want to update it, call create_skill again with `overwrite: true`. \
@@ -214,7 +227,7 @@ impl Tool for CreateSkillTool {
         match installer.install_from_path(&tmp) {
             Ok(skill) => {
                 let _ = std::fs::remove_file(&tmp);
-                let action = if overwrite && skill_path.exists() {
+                let action = if overwrite && self.skill_exists(&name) {
                     "updated"
                 } else {
                     "saved"
@@ -274,11 +287,12 @@ mod tests {
             .unwrap();
 
         assert!(!out.is_error, "unexpected error: {}", out.content);
-        assert!(dir.path().join("disk-cleanup.md").exists());
+        assert!(dir.path().join("disk-cleanup").join("SKILL.md").exists());
         assert!(out.content.contains("1/30"));
 
         // Rationale must be persisted in the skill file for auditability.
-        let saved = std::fs::read_to_string(dir.path().join("disk-cleanup.md")).unwrap();
+        let saved =
+            std::fs::read_to_string(dir.path().join("disk-cleanup").join("SKILL.md")).unwrap();
         assert!(
             saved.contains("rationale:"),
             "skill file should contain rationale field"
