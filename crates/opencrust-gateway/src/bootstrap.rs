@@ -3421,10 +3421,11 @@ pub fn build_line_channels(
                                     // cannot invoke FileRead/Bash to "verify" paths that already
                                     // exist verbatim in the retrieved context.
                                     // Only falls through to the full agent pipeline when no hits.
-                                    if is_group && file.is_none() {
-                                        if let Ok(query_embedding) =
+                                    if is_group
+                                        && file.is_none()
+                                        && let Ok(query_embedding) =
                                             provider.embed_query(&text).await
-                                        {
+                                    {
                                             let dims = query_embedding.len();
                                             if let Ok(hits) = store.search_group_messages(
                                                 "line",
@@ -3432,8 +3433,7 @@ pub fn build_line_channels(
                                                 &query_embedding,
                                                 dims,
                                                 top_k,
-                                            ) {
-                                                if !hits.is_empty() {
+                                            ) && !hits.is_empty() {
                                                     let mut lines =
                                                         Vec::with_capacity(hits.len());
                                                     for (uid, msg) in &hits {
@@ -3482,7 +3482,7 @@ pub fn build_line_channels(
                                                             &user_id,
                                                             &rate_limit_config,
                                                         )
-                                                        .map_err(|e| e)?;
+                                                        ?;
                                                     let session_id = format!("line-{context_id}");
                                                     state
                                                         .check_token_budget(
@@ -3490,8 +3490,7 @@ pub fn build_line_channels(
                                                             &user_id,
                                                             &guardrails_config,
                                                         )
-                                                        .await
-                                                        .map_err(|e| e)?;
+                                                        .await?;
                                                     let text =
                                                         opencrust_security::InputValidator::sanitize(&text);
                                                     if opencrust_security::InputValidator::check_prompt_injection(&text) {
@@ -3562,8 +3561,6 @@ pub fn build_line_channels(
                                                         }
                                                     }
                                                 }
-                                            }
-                                        }
                                     }
 
                                     // No RAG hits (or synthesis failed): full agent pipeline.
