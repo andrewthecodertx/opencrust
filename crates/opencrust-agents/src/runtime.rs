@@ -947,38 +947,37 @@ impl AgentRuntime {
         }
         // Look for a patch tool call in the response.
         for block in &response.content {
-            if let ContentBlock::ToolUse { name, input, .. } = block {
-                if name == "create_skill"
-                    && input.get("action").and_then(|v| v.as_str()) == Some("patch")
-                {
-                    let skill_name = input
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                        .to_string();
-                    let ctx = ToolContext {
-                        session_id: session_id.to_string(),
-                        user_id: None,
-                        heartbeat_depth: 0,
-                        allowed_tools: None,
-                    };
-                    if let Some(tool) = self.find_tool("create_skill") {
-                        match tool.execute(&ctx, input.clone()).await {
-                            Ok(out) if !out.is_error => {
-                                return Some(format!(
-                                    "_(Skill '{skill_name}' updated based on this session.)_"
-                                ));
-                            }
-                            Ok(out) => {
-                                warn!("skill refine patch failed: {}", out.content);
-                            }
-                            Err(e) => {
-                                warn!("skill refine patch error: {}", e);
-                            }
+            if let ContentBlock::ToolUse { name, input, .. } = block
+                && name == "create_skill"
+                && input.get("action").and_then(|v| v.as_str()) == Some("patch")
+            {
+                let skill_name = input
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let ctx = ToolContext {
+                    session_id: session_id.to_string(),
+                    user_id: None,
+                    heartbeat_depth: 0,
+                    allowed_tools: None,
+                };
+                if let Some(tool) = self.find_tool("create_skill") {
+                    match tool.execute(&ctx, input.clone()).await {
+                        Ok(out) if !out.is_error => {
+                            return Some(format!(
+                                "_(Skill '{skill_name}' updated based on this session.)_"
+                            ));
+                        }
+                        Ok(out) => {
+                            warn!("skill refine patch failed: {}", out.content);
+                        }
+                        Err(e) => {
+                            warn!("skill refine patch error: {}", e);
                         }
                     }
-                    return None;
                 }
+                return None;
             }
         }
         None

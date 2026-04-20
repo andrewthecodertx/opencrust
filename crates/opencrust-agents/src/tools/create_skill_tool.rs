@@ -447,10 +447,10 @@ impl Tool for CreateSkillTool {
 fn bump_minor_version(version: Option<&str>) -> String {
     if let Some(v) = version {
         let parts: Vec<&str> = v.trim_matches('"').splitn(3, '.').collect();
-        if parts.len() == 3 {
-            if let (Ok(major), Ok(minor)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
-                return format!("{major}.{}.0", minor + 1);
-            }
+        if parts.len() == 3
+            && let (Ok(major), Ok(minor)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>())
+        {
+            return format!("{major}.{}.0", minor + 1);
         }
     }
     "0.1.0".to_string()
