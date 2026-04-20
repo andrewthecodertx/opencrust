@@ -29,6 +29,8 @@ const SKILL_REFLECTION_THRESHOLD: usize = 3;
 const DEFAULT_SKILL_RECALL_LIMIT: usize = 5;
 /// Minimum cosine similarity for a skill to be considered relevant (0–1).
 const SKILL_SIMILARITY_THRESHOLD: f64 = 0.25;
+/// Minimum confidence (0–1) required before the refine nudge applies a patch.
+const SKILL_REFINE_CONFIDENCE_THRESHOLD: f64 = 0.7;
 
 /// Default base system prompt when none is configured.
 const DEFAULT_BASE_SYSTEM_PROMPT: &str = "\
@@ -102,6 +104,9 @@ struct NudgeContext<'a> {
     system: &'a Option<String>,
     model: &'a str,
     max_tokens: u32,
+    /// The raw skill block injected into the system prompt for this turn.
+    /// Used by `skill_refine_nudge_followup` to locate skill CHANGELOG files.
+    skills_content: Option<&'a str>,
 }
 
 impl AgentRuntime {
@@ -736,6 +741,15 @@ impl AgentRuntime {
             .map(|t| t.as_ref())
     }
 
+    /// Return the skills directory from the registered `create_skill` tool, if any.
+    fn skills_dir(&self) -> std::path::PathBuf {
+        self.tools
+            .iter()
+            .find(|t| t.name() == "create_skill")
+            .and_then(|t| t.skills_dir_hint())
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+    }
+
     /// Return a reflection nudge when the agent has completed a complex multi-tool workflow
     /// and the `create_skill` tool is available. Returns `None` when below threshold or
     /// when self-learning is disabled (tool not registered).
@@ -757,6 +771,7 @@ impl AgentRuntime {
             system,
             model,
             max_tokens,
+            skills_content: _,
         } = ctx;
         if tool_call_count < SKILL_REFLECTION_THRESHOLD {
             return None;
@@ -821,6 +836,7 @@ impl AgentRuntime {
             system,
             model,
             max_tokens,
+            skills_content,
         } = ctx;
         if tool_call_count < SKILL_REFLECTION_THRESHOLD {
             return None;
@@ -834,16 +850,74 @@ impl AgentRuntime {
                 description: t.description().to_string(),
                 input_schema: t.input_schema(),
             })?;
+        // Build patch history context from CHANGELOG files of injected skills.
+        let changelog_context = skills_content
+            .map(|sc| build_changelog_context(sc, &self.skills_dir()))
+            .unwrap_or_default();
+        let history_note = if changelog_context.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n\nRecent patch history for the skill(s) used:\n{changelog_context}\
+                 Only patch if you found a NEW gap not already addressed by recent changes."
+            )
+        };
+        // ── Round 1: confidence assessment (no tools, JSON reply) ────────────
         let mut msgs = messages.to_vec();
         msgs.push(ChatMessage {
             role: ChatRole::User,
-            content: MessagePart::Text(
+            content: MessagePart::Text(format!(
                 "[internal] You just completed a task using an existing skill. \
-                 Silently self-assess: were any steps in the skill unclear, outdated, \
-                 or improvable based on what you just did? \
-                 If yes, call create_skill with action='patch' to improve it now — \
-                 no need to ask the user. \
-                 If the skill worked well and needs no changes, reply with an empty string."
+                 Assess whether the skill needs improvement. \
+                 Reply with a JSON object only — no other text:\n\
+                 {{\"should_patch\": <true|false>, \"confidence\": <0.0–1.0>, \
+                 \"reason\": \"<one line>\", \"skill_name\": \"<name>\"}}\n\
+                 confidence = how certain you are that a gap exists (not how bad the gap is). \
+                 If the skill worked well, set should_patch=false.{history_note}"
+            )),
+        });
+        let assess_request = LlmRequest {
+            model: model.to_string(),
+            messages: msgs.clone(),
+            system: system.clone(),
+            max_tokens: Some(128),
+            temperature: None,
+            tools: vec![],
+        };
+        let assess_response = match provider.complete(&assess_request).await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("skill refine assess LLM call failed: {}", e);
+                return None;
+            }
+        };
+        if let Some(usage) = &assess_response.usage {
+            self.accumulate_usage(
+                session_id,
+                provider.provider_id(),
+                &assess_response.model,
+                usage.input_tokens,
+                usage.output_tokens,
+            );
+        }
+        // Parse assessment JSON; skip patch if confidence < threshold.
+        let assessment_text = extract_text(&assess_response.content);
+        let assessment = parse_refine_assessment(&assessment_text);
+        if !assessment.should_patch || assessment.confidence < SKILL_REFINE_CONFIDENCE_THRESHOLD {
+            return None;
+        }
+
+        // ── Round 2: execute patch (with create_skill tool) ──────────────────
+        msgs.push(ChatMessage {
+            role: ChatRole::Assistant,
+            content: MessagePart::Text(assessment_text),
+        });
+        msgs.push(ChatMessage {
+            role: ChatRole::User,
+            content: MessagePart::Text(
+                "[internal] Confidence threshold met. \
+                 Call create_skill with action='patch' to apply the improvement now. \
+                 Include the 'reason' field from your assessment."
                     .to_string(),
             ),
         });
@@ -1306,6 +1380,7 @@ impl AgentRuntime {
                             system: &system,
                             model: &effective_model,
                             max_tokens: effective_max_tokens,
+                            skills_content: skills.as_deref(),
                         },
                         session_id,
                     )
@@ -1520,6 +1595,7 @@ impl AgentRuntime {
                             system: &system,
                             model: &effective_model,
                             max_tokens: effective_max_tokens,
+                            skills_content: skills.as_deref(),
                         },
                         session_id,
                     )
@@ -1693,6 +1769,7 @@ impl AgentRuntime {
                             system: &system,
                             model: "",
                             max_tokens: self.max_tokens.unwrap_or(4096),
+                            skills_content: skills.as_deref(),
                         },
                         session_id,
                     )
@@ -1989,6 +2066,7 @@ impl AgentRuntime {
                                     system: &system,
                                     model: "",
                                     max_tokens: self.max_tokens.unwrap_or(4096),
+                                    skills_content: skills.as_deref(),
                                 },
                                 session_id,
                             )
@@ -2115,6 +2193,7 @@ impl AgentRuntime {
                                     system: &system,
                                     model: "",
                                     max_tokens: self.max_tokens.unwrap_or(4096),
+                                    skills_content: skills.as_deref(),
                                 },
                                 session_id,
                             )
@@ -2325,6 +2404,7 @@ impl AgentRuntime {
                             system: &system,
                             model: "",
                             max_tokens: self.max_tokens.unwrap_or(4096),
+                            skills_content: skills.as_deref(),
                         },
                         session_id,
                     )
@@ -2562,6 +2642,7 @@ impl AgentRuntime {
                                     system: &system,
                                     model: "",
                                     max_tokens: self.max_tokens.unwrap_or(4096),
+                                    skills_content: skills.as_deref(),
                                 },
                                 session_id,
                             )
@@ -2675,6 +2756,7 @@ impl AgentRuntime {
                                     system: &system,
                                     model: "",
                                     max_tokens: self.max_tokens.unwrap_or(4096),
+                                    skills_content: skills.as_deref(),
                                 },
                                 session_id,
                             )
@@ -3298,6 +3380,64 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
 
 /// Compact text representation of a skill used for embedding at index time.
 /// Combines name, description, and triggers so the vector captures intent.
+/// Parsed result of the refine-nudge confidence assessment round.
+struct RefineAssessment {
+    should_patch: bool,
+    confidence: f64,
+}
+
+/// Parse the JSON assessment produced by the confidence-check LLM call.
+/// Returns a conservative default (should_patch=false) on any parse error.
+fn parse_refine_assessment(text: &str) -> RefineAssessment {
+    // Strip markdown code fences if present.
+    let cleaned = text
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(cleaned) {
+        let should_patch = v
+            .get("should_patch")
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false);
+        let confidence = v.get("confidence").and_then(|c| c.as_f64()).unwrap_or(0.0);
+        return RefineAssessment {
+            should_patch,
+            confidence,
+        };
+    }
+    RefineAssessment {
+        should_patch: false,
+        confidence: 0.0,
+    }
+}
+
+/// Extract skill names from the injected `# Active Skills` block and read
+/// their CHANGELOG.md files. Returns a formatted string for the refine prompt,
+/// or an empty string if no changelogs are found.
+fn build_changelog_context(skills_block: &str, skills_dir: &std::path::Path) -> String {
+    // Skill names appear as "## skill-name" headings in the block.
+    let names: Vec<&str> = skills_block
+        .lines()
+        .filter_map(|l| l.strip_prefix("## "))
+        .collect();
+    let mut out = String::new();
+    for name in names {
+        let changelog = skills_dir.join(name).join("CHANGELOG.md");
+        if let Ok(content) = std::fs::read_to_string(&changelog) {
+            // Include only the first 500 chars to keep prompt compact.
+            let snippet = if content.len() > 500 {
+                &content[..500]
+            } else {
+                &content
+            };
+            out.push_str(&format!("### {name}\n{snippet}\n\n"));
+        }
+    }
+    out
+}
+
 fn skill_embed_text(skill: &opencrust_skills::SkillDefinition) -> String {
     let fm = &skill.frontmatter;
     let mut parts = vec![fm.name.clone(), fm.description.clone()];
@@ -4487,10 +4627,22 @@ mod tests {
         }
     }
 
-    /// Provider that returns a patch tool_use call for create_skill.
+    /// Provider that simulates the two-round refine nudge flow:
+    /// - Round 1 (tools=[]): returns a high-confidence JSON assessment
+    /// - Round 2 (tools=[create_skill]): returns a patch tool_use call
     struct RefinePatchProvider {
         skill_name: &'static str,
         new_body: &'static str,
+        call_count: std::sync::atomic::AtomicUsize,
+    }
+    impl RefinePatchProvider {
+        fn new(skill_name: &'static str, new_body: &'static str) -> Self {
+            Self {
+                skill_name,
+                new_body,
+                call_count: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
     }
     #[async_trait::async_trait]
     impl LlmProvider for RefinePatchProvider {
@@ -4498,24 +4650,47 @@ mod tests {
             "refine-patch"
         }
         async fn complete(&self, request: &LlmRequest) -> Result<crate::providers::LlmResponse> {
-            assert!(
-                request.tools.iter().any(|t| t.name == "create_skill"),
-                "refine nudge must send create_skill tool definition"
-            );
-            Ok(crate::providers::LlmResponse {
-                content: vec![ContentBlock::ToolUse {
-                    id: "tu_1".to_string(),
-                    name: "create_skill".to_string(),
-                    input: serde_json::json!({
-                        "action": "patch",
-                        "name": self.skill_name,
-                        "body": self.new_body,
-                    }),
-                }],
-                model: String::new(),
-                usage: None,
-                stop_reason: None,
-            })
+            let round = self
+                .call_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if round == 0 {
+                // Round 1: assessment — no tools expected
+                assert!(
+                    request.tools.is_empty(),
+                    "assessment round must send tools=[]"
+                );
+                let json = format!(
+                    r#"{{"should_patch":true,"confidence":0.9,"reason":"step 2 was unclear","skill_name":"{}"}}"#,
+                    self.skill_name
+                );
+                Ok(crate::providers::LlmResponse {
+                    content: vec![ContentBlock::Text { text: json }],
+                    model: String::new(),
+                    usage: None,
+                    stop_reason: None,
+                })
+            } else {
+                // Round 2: patch execution — create_skill tool expected
+                assert!(
+                    request.tools.iter().any(|t| t.name == "create_skill"),
+                    "patch round must send create_skill tool definition"
+                );
+                Ok(crate::providers::LlmResponse {
+                    content: vec![ContentBlock::ToolUse {
+                        id: "tu_1".to_string(),
+                        name: "create_skill".to_string(),
+                        input: serde_json::json!({
+                            "action": "patch",
+                            "name": self.skill_name,
+                            "body": self.new_body,
+                            "reason": "step 2 was unclear",
+                        }),
+                    }],
+                    model: String::new(),
+                    usage: None,
+                    stop_reason: None,
+                })
+            }
         }
         async fn health_check(&self) -> Result<bool> {
             Ok(true)
@@ -4562,6 +4737,7 @@ mod tests {
                     system: &None,
                     model: "",
                     max_tokens: 256,
+                    skills_content: None,
                 },
                 "sess",
             )
@@ -4586,6 +4762,7 @@ mod tests {
                     system: &None,
                     model: "",
                     max_tokens: 256,
+                    skills_content: None,
                 },
                 "sess",
             )
@@ -4612,6 +4789,7 @@ mod tests {
                     system: &None,
                     model: "",
                     max_tokens: 256,
+                    skills_content: None,
                 },
                 "sess",
             )
@@ -4639,6 +4817,7 @@ mod tests {
                     system: &None,
                     model: "",
                     max_tokens: 256,
+                    skills_content: None,
                 },
                 "sess",
             )
@@ -4692,6 +4871,7 @@ mod tests {
                     system: &None,
                     model: "",
                     max_tokens: 8192,
+                    skills_content: None,
                 },
                 "sess",
             )
@@ -4714,6 +4894,7 @@ mod tests {
                     system: &None,
                     model: "",
                     max_tokens: 256,
+                    skills_content: None,
                 },
                 "sess",
             )
@@ -4772,6 +4953,7 @@ mod tests {
                     system: &None,
                     model: "",
                     max_tokens: 256,
+                    skills_content: None,
                 },
                 "sess",
             )
@@ -4814,6 +4996,7 @@ mod tests {
                     system: &None,
                     model: "",
                     max_tokens: 256,
+                    skills_content: None,
                 },
                 "sess",
             )
@@ -4837,6 +5020,7 @@ mod tests {
                     system: &None,
                     model: "",
                     max_tokens: 256,
+                    skills_content: None,
                 },
                 "sess",
             )
@@ -4861,6 +5045,7 @@ mod tests {
                     system: &None,
                     model: "",
                     max_tokens: 256,
+                    skills_content: None,
                 },
                 "sess",
             )
@@ -4884,10 +5069,10 @@ mod tests {
         .unwrap();
 
         let runtime = runtime_with_create_skill_tool(dir.path());
-        let provider = RefinePatchProvider {
-            skill_name: "my-skill",
-            new_body: "Updated body with improvements and enough characters to pass validation.",
-        };
+        let provider = RefinePatchProvider::new(
+            "my-skill",
+            "Updated body with improvements and enough characters to pass validation.",
+        );
         let result = runtime
             .skill_refine_nudge_followup(
                 SKILL_REFLECTION_THRESHOLD,
@@ -4897,6 +5082,7 @@ mod tests {
                     system: &None,
                     model: "",
                     max_tokens: 512,
+                    skills_content: None,
                 },
                 "sess",
             )
@@ -4915,5 +5101,83 @@ mod tests {
             updated.contains("Updated body"),
             "SKILL.md should reflect the patch"
         );
+        // CHANGELOG.md should be written inside the skill folder.
+        let changelog = std::fs::read_to_string(skill_dir.join("CHANGELOG.md")).unwrap();
+        assert!(
+            changelog.contains("step 2 was unclear"),
+            "CHANGELOG should record patch reason"
+        );
+    }
+
+    #[tokio::test]
+    async fn refine_nudge_skips_patch_when_confidence_too_low() {
+        /// Provider that returns a low-confidence assessment on round 1.
+        struct LowConfidenceProvider;
+        #[async_trait::async_trait]
+        impl LlmProvider for LowConfidenceProvider {
+            fn provider_id(&self) -> &str {
+                "low-conf"
+            }
+            async fn complete(
+                &self,
+                _request: &LlmRequest,
+            ) -> Result<crate::providers::LlmResponse> {
+                Ok(crate::providers::LlmResponse {
+                    content: vec![ContentBlock::Text {
+                        text: r#"{"should_patch":true,"confidence":0.5,"reason":"minor gap","skill_name":"x"}"#.to_string(),
+                    }],
+                    model: String::new(),
+                    usage: None,
+                    stop_reason: None,
+                })
+            }
+            async fn health_check(&self) -> Result<bool> {
+                Ok(true)
+            }
+        }
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let runtime = runtime_with_create_skill_tool(dir.path());
+        let provider = LowConfidenceProvider;
+        let result = runtime
+            .skill_refine_nudge_followup(
+                SKILL_REFLECTION_THRESHOLD,
+                NudgeContext {
+                    provider: &provider,
+                    messages: &[],
+                    system: &None,
+                    model: "",
+                    max_tokens: 512,
+                    skills_content: None,
+                },
+                "sess",
+            )
+            .await;
+        assert!(
+            result.is_none(),
+            "should not patch when confidence < SKILL_REFINE_CONFIDENCE_THRESHOLD"
+        );
+    }
+
+    #[test]
+    fn parse_refine_assessment_valid_json() {
+        let text = r#"{"should_patch":true,"confidence":0.85,"reason":"gap","skill_name":"x"}"#;
+        let a = parse_refine_assessment(text);
+        assert!(a.should_patch);
+        assert!((a.confidence - 0.85).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parse_refine_assessment_with_code_fence() {
+        let text = "```json\n{\"should_patch\":false,\"confidence\":0.3,\"reason\":\"ok\"}\n```";
+        let a = parse_refine_assessment(text);
+        assert!(!a.should_patch);
+    }
+
+    #[test]
+    fn parse_refine_assessment_invalid_returns_no_patch() {
+        let a = parse_refine_assessment("not json at all");
+        assert!(!a.should_patch);
+        assert_eq!(a.confidence, 0.0);
     }
 }
