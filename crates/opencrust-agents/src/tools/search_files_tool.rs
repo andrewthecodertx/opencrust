@@ -65,10 +65,10 @@ async fn walk_files(root: &Path, glob_regex: Option<&regex::Regex>) -> Vec<PathB
                 }
             } else if meta.is_file() {
                 let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if let Some(rx) = glob_regex {
-                    if !rx.is_match(file_name) {
-                        continue;
-                    }
+                if let Some(rx) = glob_regex
+                    && !rx.is_match(file_name)
+                {
+                    continue;
                 }
                 results.push(path);
             }
