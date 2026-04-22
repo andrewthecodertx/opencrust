@@ -47,13 +47,17 @@ impl CreateSkillTool {
 
     /// Returns true when a skill with this name already exists (either layout).
     fn skill_exists(&self, name: &str) -> bool {
-        self.skills_dir.join(name).join("SKILL.md").exists()
-            || self.skills_dir.join(format!("{name}.md")).exists()
+        self.skill_path(name).exists() || self.skills_dir.join(format!("{name}.md")).exists()
+    }
+
+    /// Returns the folder-layout path for a skill's `SKILL.md`.
+    fn skill_path(&self, name: &str) -> PathBuf {
+        self.skills_dir.join(name).join("SKILL.md")
     }
 
     /// Returns the canonical path of an existing skill file (folder layout preferred).
     fn skill_path_canonical(&self, name: &str) -> PathBuf {
-        let folder = self.skills_dir.join(name).join("SKILL.md");
+        let folder = self.skill_path(name);
         if folder.exists() {
             folder
         } else {
@@ -266,15 +270,17 @@ impl CreateSkillTool {
         content.push_str(body);
         content.push('\n');
 
-        // Install via temp file (runs parse + validate + security scan + write)
         let installer = opencrust_skills::SkillInstaller::new(&self.skills_dir);
-        let tmp = Self::temp_path(&name);
-        if let Err(e) = std::fs::write(&tmp, &content) {
-            return Ok(ToolOutput::error(format!("failed to stage patch: {e}")));
-        }
-        match installer.install_from_path(&tmp) {
+        let validated = match installer.validate_content(content) {
+            Ok(skill) => skill,
+            Err(e) => return Ok(ToolOutput::error(format!("patch failed: {e}"))),
+        };
+
+        opencrust_config::try_backup_file(&existing_path);
+
+        match installer.write_validated(validated) {
+            // This migrates the skill to the new layout, preserving the old one
             Ok(skill) => {
-                let _ = std::fs::remove_file(&tmp);
                 // Append changelog entry inside the skill folder.
                 let changelog_note = input
                     .get("reason")
@@ -286,10 +292,7 @@ impl CreateSkillTool {
                     skill.frontmatter.name
                 )))
             }
-            Err(e) => {
-                let _ = std::fs::remove_file(&tmp);
-                Ok(ToolOutput::error(format!("patch failed: {e}")))
-            }
+            Err(e) => Ok(ToolOutput::error(format!("patch failed: {e}"))),
         }
     }
 
@@ -697,6 +700,92 @@ mod tests {
         assert!(saved.contains("Step one: check logs"));
         // Original description preserved
         assert!(saved.contains("Original description"));
+    }
+
+    #[tokio::test]
+    async fn patch_backs_up_existing_skill_before_overwrite() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let tool = CreateSkillTool::new(dir.path());
+
+        tool.execute(
+            &ctx(),
+            serde_json::json!({
+                "name": "my-skill",
+                "description": "Original description",
+                "body": GOOD_BODY,
+                "rationale": GOOD_RATIONALE
+            }),
+        )
+        .await
+        .unwrap();
+
+        let skill_dir = dir.path().join("my-skill");
+        let skill_path = skill_dir.join("SKILL.md");
+
+        let patched_body = "1. Read the current logs carefully.\n\
+            2. Identify the failing step and write it down.\n\
+            3. Patch the workflow with the newly discovered fix.\n\
+            4. Verify the updated workflow before relying on it.";
+
+        let out = tool
+            .execute(
+                &ctx(),
+                serde_json::json!({
+                    "action": "patch",
+                    "name": "my-skill",
+                    "body": patched_body,
+                    "reason": "clarified the diagnostic sequence"
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert!(!out.is_error, "{}", out.content);
+        let backup = std::fs::read_to_string(skill_dir.join("SKILL.md.bak.1")).unwrap();
+        assert!(backup.contains("description: Original description"));
+        assert!(backup.contains("Run `df -h` to see disk usage by partition"));
+        let patched_skill = std::fs::read_to_string(&skill_path).unwrap();
+        assert!(patched_skill.contains("2. Identify the failing step and write it down"));
+    }
+
+    #[tokio::test]
+    async fn patch_migrates_flat_skill_to_folder_layout() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let flat_path = dir.path().join("my-skill.md");
+        std::fs::write(
+            &flat_path,
+            format!("---\nname: my-skill\ndescription: Original description\n---\n\n{GOOD_BODY}\n"),
+        )
+        .unwrap();
+
+        let tool = CreateSkillTool::new(dir.path());
+        let out = tool
+            .execute(
+                &ctx(),
+                serde_json::json!({
+                    "action": "patch",
+                    "name": "my-skill",
+                    "description": "Flat skill updated"
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert!(!out.is_error, "{}", out.content);
+        let folder_skill =
+            std::fs::read_to_string(dir.path().join("my-skill").join("SKILL.md")).unwrap();
+        assert!(folder_skill.contains("description: Flat skill updated"));
+        assert!(folder_skill.contains("version: \"0.1.0\""));
+        assert!(
+            std::fs::read_to_string(&flat_path)
+                .unwrap()
+                .contains("description: Original description")
+        );
+        assert!(
+            std::fs::read_to_string(dir.path().join("my-skill.md.bak.1"))
+                .unwrap()
+                .contains("description: Original description")
+        );
     }
 
     #[tokio::test]
